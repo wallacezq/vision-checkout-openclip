@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Page</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f9fafb;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    
+    .payment-container {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.1);
+      width: 350px;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    label {
+      font-weight: bold;
+      display: block;
+      margin-top: 10px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+
+    .pay-btn {
+      width: 100%;
+      background-color: #ff9900;
+      color: white;
+      padding: 15px;
+      border: none;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+
+    .pay-btn:hover {
+      background-color: #e88a00;
+    }
+  </style>
+</head>
+<body>
+  <div class="payment-container">
+    <h2>Complete Your Payment</h2>
+
+    <label for="cardNumber">Card Number</label>
+    <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" maxlength="19">
+    <small id="cardError" style="color:red; display:none;"></small>
+
+    <label for="expiry">Expiry Date</label>
+    <input type="text" id="expiry" placeholder="MM/YY" maxlength="5">
+    <small id="expiryError" style="color:red; display:none;"></small>
+
+    <label for="cvv">CVV</label>
+    <input type="password" id="cvv" placeholder="123" maxlength="4">
+    <small id="cvvError" style="color:red; display:none;"></small>
+
+    <p id="cardType" style="margin-top: 10px; font-weight: bold;"></p>
+
+    <button class="pay-btn" onclick="confirmPayment()">Pay Now</button>
+  </div>
+
+  <script>
+    const cardInput = document.getElementById("cardNumber");
+    const expiryInput = document.getElementById("expiry");
+    const cvvInput = document.getElementById("cvv");
+    const cardType = document.getElementById("cardType");
+
+    cardInput.addEventListener("input", function (e) {
+      let value = e.target.value.replace(/\D/g, "").substring(0, 16);
+      e.target.value = value.replace(/(.{4})/g, "$1 ").trim();
+
+      // Detect card type
+      const firstDigit = value[0];
+      if (firstDigit === "4") cardType.textContent = "Card Type: Visa";
+      else if (firstDigit === "5") cardType.textContent = "Card Type: MasterCard";
+      else if (firstDigit === "3") cardType.textContent = "Card Type: American Express";
+      else cardType.textContent = "";
+    });
+
+    expiryInput.addEventListener("input", function (e) {
+      let value = e.target.value.replace(/\D/g, "").substring(0, 4);
+      if (value.length > 2) value = value.substring(0, 2) + "/" + value.substring(2);
+      e.target.value = value;
+    });
+
+    cvvInput.addEventListener("input", function (e) {
+      e.target.value = e.target.value.replace(/\D/g, "").substring(0, 4);
+    });
+
+    function confirmPayment() {
+      const cardNumber = cardInput.value.trim();
+      const expiry = expiryInput.value.trim();
+      const cvv = cvvInput.value.trim();
+
+      const cardValid = cardNumber.replace(/\s/g, "").length === 16;
+      const expiryValid = /^\d{2}\/\d{2}$/.test(expiry);
+      const cvvValid = /^\d{3,4}$/.test(cvv);
+
+      // Hide all errors
+      document.getElementById("cardError").style.display = "none";
+      document.getElementById("expiryError").style.display = "none";
+      document.getElementById("cvvError").style.display = "none";
+
+      let isValid = true;
+
+      if (!cardValid) {
+        document.getElementById("cardError").textContent = "Invalid card number";
+        document.getElementById("cardError").style.display = "block";
+        isValid = false;
+      }
+
+      if (!expiryValid) {
+        document.getElementById("expiryError").textContent = "Invalid expiry format (MM/YY)";
+        document.getElementById("expiryError").style.display = "block";
+        isValid = false;
+      }
+
+      if (!cvvValid) {
+        document.getElementById("cvvError").textContent = "Invalid CVV";
+        document.getElementById("cvvError").style.display = "block";
+        isValid = false;
+      }
+
+      if (!isValid) return;
+
+      alert("Payment Successful! Thank you for your purchase.");
+      window.location.href = "/payment/success";
+    }
+  </script>
+</body>
+
+</html>
