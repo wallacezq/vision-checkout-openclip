@@ -1,153 +1,478 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Payment Page</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Payment — Vision Checkout</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet"/>
   <style>
+    :root {
+      --bg:        #12141c;
+      --panel:     #1a1d2e;
+      --card:      #21253a;
+      --card-h:    #272b42;
+      --border:    #2e3350;
+      --accent:    #4f6ef7;
+      --accent-h:  #6b85ff;
+      --green:     #3ecf8e;
+      --red:       #f76e6e;
+      --text:      #e8eaf6;
+      --muted:     #8891b8;
+      --faint:     #3a4060;
+      --radius-lg: 20px;
+      --radius:    14px;
+      --radius-sm: 9px;
+      --font:      'Nunito', sans-serif;
+      --font-body: 'Nunito Sans', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      font-family: Arial, sans-serif;
-      background-color: #f9fafb;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
       display: flex;
-      justify-content: center;
       align-items: center;
-      height: 100vh;
-    }
-    
-    .payment-container {
-      background: white;
-      padding: 30px;
-      border-radius: 12px;
-      box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.1);
-      width: 350px;
+      justify-content: center;
+      padding: 24px;
     }
 
-    h2 {
-      text-align: center;
-      margin-bottom: 20px;
-    }
-
-    label {
-      font-weight: bold;
-      display: block;
-      margin-top: 10px;
-    }
-
-    input {
+    /* ── Card shell ── */
+    .payment-card {
+      background: var(--panel);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 32px 80px rgba(0,0,0,0.55);
       width: 100%;
-      padding: 10px;
-      margin-top: 5px;
-      border: 1px solid #ddd;
-      border-radius: 5px;
+      max-width: 420px;
+      overflow: hidden;
     }
 
+    /* ── Header strip ── */
+    .payment-header {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 22px 28px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .payment-header .icon-badge {
+      width: 36px; height: 36px;
+      background: var(--accent);
+      border-radius: 9px;
+      display: grid; place-items: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .payment-header-text h1 {
+      font-size: 1.1rem;
+      font-weight: 900;
+      letter-spacing: -0.3px;
+    }
+    .payment-header-text p {
+      font-size: 0.72rem;
+      color: var(--muted);
+      font-family: var(--font-body);
+      margin-top: 1px;
+    }
+
+    /* ── Amount banner ── */
+    .amount-banner {
+      background: rgba(79,110,247,0.08);
+      border-bottom: 1px solid rgba(79,110,247,0.18);
+      padding: 18px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .amount-label {
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .amount-value {
+      font-size: 1.55rem;
+      font-weight: 900;
+      color: var(--text);
+      letter-spacing: -0.5px;
+    }
+
+    /* ── Form body ── */
+    .payment-body {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    /* virtual card preview */
+    .card-preview {
+      background: linear-gradient(135deg, #2a3060 0%, #1a1d2e 100%);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 22px 18px;
+      position: relative;
+      overflow: hidden;
+    }
+    .card-preview::before {
+      content: '';
+      position: absolute;
+      top: -30px; right: -30px;
+      width: 130px; height: 130px;
+      border-radius: 50%;
+      background: rgba(79,110,247,0.12);
+    }
+    .card-preview::after {
+      content: '';
+      position: absolute;
+      bottom: -40px; left: -20px;
+      width: 110px; height: 110px;
+      border-radius: 50%;
+      background: rgba(79,110,247,0.07);
+    }
+    .card-chip {
+      width: 32px; height: 24px;
+      background: linear-gradient(135deg, #f7c96e 0%, #e0a830 100%);
+      border-radius: 4px;
+      margin-bottom: 16px;
+      position: relative; z-index: 1;
+    }
+    .card-number-preview {
+      font-family: var(--font-body);
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 3px;
+      color: var(--text);
+      margin-bottom: 14px;
+      position: relative; z-index: 1;
+    }
+    .card-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      position: relative; z-index: 1;
+    }
+    .card-meta-item label {
+      font-size: 0.58rem;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 2px;
+      font-weight: 700;
+    }
+    .card-meta-item span {
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: var(--text);
+      font-family: var(--font-body);
+    }
+    .card-brand {
+      font-size: 0.9rem;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.55);
+    }
+    .card-brand.visa   { color: #a0b4ff; }
+    .card-brand.mc     { color: #ffb347; }
+    .card-brand.amex   { color: #7de8c8; }
+
+    /* field groups */
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .field-row {
+      display: flex;
+      gap: 14px;
+    }
+    .field-row .field-group { flex: 1; }
+
+    .field-label {
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .field-input {
+      background: var(--card);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 11px 14px;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      color: var(--text);
+      outline: none;
+      width: 100%;
+      transition: border-color 0.2s;
+    }
+    .field-input::placeholder { color: var(--muted); opacity: 0.6; }
+    .field-input:focus { border-color: var(--accent); }
+    .field-input.invalid { border-color: var(--red); }
+
+    .field-error {
+      font-size: 0.68rem;
+      color: var(--red);
+      font-family: var(--font-body);
+      min-height: 14px;
+      display: none;
+    }
+    .field-error.visible { display: block; }
+
+    /* pay button */
     .pay-btn {
       width: 100%;
-      background-color: #ff9900;
-      color: white;
-      padding: 15px;
+      background: var(--accent);
+      color: #fff;
       border: none;
-      border-radius: 8px;
-      font-size: 18px;
-      font-weight: 600;
+      border-radius: var(--radius);
+      padding: 15px;
+      font-family: var(--font);
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: 0.3px;
       cursor: pointer;
-      margin-top: 20px;
+      transition: background 0.2s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 4px;
     }
+    .pay-btn:hover { background: var(--accent-h); }
+    .pay-btn:active { transform: scale(0.98); }
 
-    .pay-btn:hover {
-      background-color: #e88a00;
+    .back-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.15s;
+      cursor: pointer;
+      background: none;
+      border: none;
+      font-family: var(--font);
+    }
+    .back-link:hover { color: var(--text); }
+
+    /* secure badge */
+    .secure-badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-size: 0.68rem;
+      color: var(--faint);
+      font-family: var(--font-body);
+      padding-bottom: 20px;
     }
   </style>
 </head>
 <body>
-  <div class="payment-container">
-    <h2>Complete Your Payment</h2>
 
-    <label for="cardNumber">Card Number</label>
-    <input type="text" id="cardNumber" placeholder="1234 5678 9012 3456" maxlength="19">
-    <small id="cardError" style="color:red; display:none;"></small>
+<div class="payment-card">
 
-    <label for="expiry">Expiry Date</label>
-    <input type="text" id="expiry" placeholder="MM/YY" maxlength="5">
-    <small id="expiryError" style="color:red; display:none;"></small>
-
-    <label for="cvv">CVV</label>
-    <input type="password" id="cvv" placeholder="123" maxlength="4">
-    <small id="cvvError" style="color:red; display:none;"></small>
-
-    <p id="cardType" style="margin-top: 10px; font-weight: bold;"></p>
-
-    <button class="pay-btn" onclick="confirmPayment()">Pay Now</button>
+  <!-- Header -->
+  <div class="payment-header">
+    <div class="icon-badge">💳</div>
+    <div class="payment-header-text">
+      <h1>Secure Payment</h1>
+      <p>Automatic Vision-based Checkout</p>
+    </div>
   </div>
 
-  <script>
-    const cardInput = document.getElementById("cardNumber");
-    const expiryInput = document.getElementById("expiry");
-    const cvvInput = document.getElementById("cvv");
-    const cardType = document.getElementById("cardType");
+  <!-- Amount -->
+  <div class="amount-banner">
+    <span class="amount-label">Amount Due</span>
+    <span class="amount-value" id="amountDisplay">RM —</span>
+  </div>
 
-    cardInput.addEventListener("input", function (e) {
-      let value = e.target.value.replace(/\D/g, "").substring(0, 16);
-      e.target.value = value.replace(/(.{4})/g, "$1 ").trim();
+  <!-- Form -->
+  <div class="payment-body">
 
-      // Detect card type
-      const firstDigit = value[0];
-      if (firstDigit === "4") cardType.textContent = "Card Type: Visa";
-      else if (firstDigit === "5") cardType.textContent = "Card Type: MasterCard";
-      else if (firstDigit === "3") cardType.textContent = "Card Type: American Express";
-      else cardType.textContent = "";
+    <!-- Virtual card preview -->
+    <div class="card-preview" id="cardPreview">
+      <div class="card-chip"></div>
+      <div class="card-number-preview" id="previewNumber">•••• •••• •••• ••••</div>
+      <div class="card-meta">
+        <div class="card-meta-item">
+          <label>Expiry</label>
+          <span id="previewExpiry">MM / YY</span>
+        </div>
+        <div class="card-meta-item">
+          <label>Cardholder</label>
+          <span id="previewName">YOUR NAME</span>
+        </div>
+        <div class="card-brand" id="previewBrand"></div>
+      </div>
+    </div>
+
+    <!-- Card number -->
+    <div class="field-group">
+      <span class="field-label">Card Number</span>
+      <input class="field-input" type="text" id="cardNumber" placeholder="1234 5678 9012 3456" maxlength="19" autocomplete="cc-number"/>
+      <span class="field-error" id="cardError"></span>
+    </div>
+
+    <!-- Cardholder name -->
+    <div class="field-group">
+      <span class="field-label">Cardholder Name</span>
+      <input class="field-input" type="text" id="cardName" placeholder="e.g. John Smith" autocomplete="cc-name"/>
+      <span class="field-error" id="nameError"></span>
+    </div>
+
+    <!-- Expiry + CVV -->
+    <div class="field-row">
+      <div class="field-group">
+        <span class="field-label">Expiry Date</span>
+        <input class="field-input" type="text" id="expiry" placeholder="MM / YY" maxlength="7" autocomplete="cc-exp"/>
+        <span class="field-error" id="expiryError"></span>
+      </div>
+      <div class="field-group">
+        <span class="field-label">CVV</span>
+        <input class="field-input" type="password" id="cvv" placeholder="•••" maxlength="4" autocomplete="cc-csc"/>
+        <span class="field-error" id="cvvError"></span>
+      </div>
+    </div>
+
+    <!-- Pay button -->
+    <button class="pay-btn" id="payBtn" onclick="confirmPayment()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+      </svg>
+      Pay Now
+    </button>
+
+    <!-- Back link -->
+    <button class="back-link" onclick="history.back()">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      Back to cart
+    </button>
+
+  </div>
+
+  <!-- Secure badge -->
+  <div class="secure-badge">
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    256-bit SSL encrypted · Payments are processed securely
+  </div>
+
+</div>
+
+<script>
+  // ── Populate amount from URL query param ──────────────────────
+  const params = new URLSearchParams(window.location.search);
+  const amount = parseFloat(params.get('amount'));
+  if (!isNaN(amount)) {
+    document.getElementById('amountDisplay').textContent = 'RM ' + amount.toFixed(2);
+  }
+
+  // ── DOM refs ──────────────────────────────────────────────────
+  const cardInput    = document.getElementById('cardNumber');
+  const nameInput    = document.getElementById('cardName');
+  const expiryInput  = document.getElementById('expiry');
+  const cvvInput     = document.getElementById('cvv');
+  const previewNum   = document.getElementById('previewNumber');
+  const previewExp   = document.getElementById('previewExpiry');
+  const previewName  = document.getElementById('previewName');
+  const previewBrand = document.getElementById('previewBrand');
+
+  // ── Card number formatting & brand detection ──────────────────
+  cardInput.addEventListener('input', function (e) {
+    let value = e.target.value.replace(/\D/g, '').substring(0, 16);
+    e.target.value = value.replace(/(.{4})/g, '$1 ').trim();
+
+    // live card preview
+    const padded = value.padEnd(16, '•');
+    previewNum.textContent = padded.replace(/(.{4})/g, '$1 ').trim();
+
+    // brand
+    const f = value[0];
+    if (f === '4')       { previewBrand.textContent = 'VISA';       previewBrand.className = 'card-brand visa'; }
+    else if (f === '5')  { previewBrand.textContent = 'MASTERCARD'; previewBrand.className = 'card-brand mc'; }
+    else if (f === '3')  { previewBrand.textContent = 'AMEX';       previewBrand.className = 'card-brand amex'; }
+    else                 { previewBrand.textContent = '';            previewBrand.className = 'card-brand'; }
+  });
+
+  // ── Cardholder name live preview ──────────────────────────────
+  nameInput.addEventListener('input', function () {
+    previewName.textContent = nameInput.value.toUpperCase() || 'YOUR NAME';
+  });
+
+  // ── Expiry formatting ─────────────────────────────────────────
+  expiryInput.addEventListener('input', function (e) {
+    let value = e.target.value.replace(/\D/g, '').substring(0, 4);
+    if (value.length > 2) value = value.substring(0, 2) + ' / ' + value.substring(2);
+    e.target.value = value;
+    previewExp.textContent = value || 'MM / YY';
+  });
+
+  // ── CVV ───────────────────────────────────────────────────────
+  cvvInput.addEventListener('input', function (e) {
+    e.target.value = e.target.value.replace(/\D/g, '').substring(0, 4);
+  });
+
+  // ── Validation helpers ────────────────────────────────────────
+  function showError(id, msg) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.classList.add('visible');
+    document.getElementById(id.replace('Error', id.includes('card') && id !== 'cardError' ? 'Name' : '')); // noop — handled below
+  }
+  function showFieldError(fieldId, errorId, msg) {
+    const input = document.getElementById(fieldId);
+    const err   = document.getElementById(errorId);
+    input.classList.add('invalid');
+    err.textContent = msg;
+    err.classList.add('visible');
+  }
+  function clearErrors() {
+    ['cardNumber','cardName','expiry','cvv'].forEach(id => {
+      document.getElementById(id).classList.remove('invalid');
     });
-
-    expiryInput.addEventListener("input", function (e) {
-      let value = e.target.value.replace(/\D/g, "").substring(0, 4);
-      if (value.length > 2) value = value.substring(0, 2) + "/" + value.substring(2);
-      e.target.value = value;
+    ['cardError','nameError','expiryError','cvvError'].forEach(id => {
+      const el = document.getElementById(id);
+      el.textContent = '';
+      el.classList.remove('visible');
     });
+  }
 
-    cvvInput.addEventListener("input", function (e) {
-      e.target.value = e.target.value.replace(/\D/g, "").substring(0, 4);
-    });
+  // ── Confirm payment ───────────────────────────────────────────
+  function confirmPayment() {
+    clearErrors();
 
-    function confirmPayment() {
-      const cardNumber = cardInput.value.trim();
-      const expiry = expiryInput.value.trim();
-      const cvv = cvvInput.value.trim();
+    const cardNumber = cardInput.value.trim();
+    const name       = nameInput.value.trim();
+    const expiry     = expiryInput.value.trim();
+    const cvv        = cvvInput.value.trim();
 
-      const cardValid = cardNumber.replace(/\s/g, "").length === 16;
-      const expiryValid = /^\d{2}\/\d{2}$/.test(expiry);
-      const cvvValid = /^\d{3,4}$/.test(cvv);
+    const cardValid   = cardNumber.replace(/\s/g, '').length === 16;
+    const nameValid   = name.length >= 2;
+    const expiryClean = expiry.replace(/\s/g, '');          // "MM/YY" after stripping spaces
+    const expiryValid = /^\d{2}\/\d{2}$/.test(expiryClean);
+    const cvvValid    = /^\d{3,4}$/.test(cvv);
 
-      // Hide all errors
-      document.getElementById("cardError").style.display = "none";
-      document.getElementById("expiryError").style.display = "none";
-      document.getElementById("cvvError").style.display = "none";
+    let ok = true;
+    if (!cardValid)  { showFieldError('cardNumber','cardError',  'Enter a valid 16-digit card number'); ok = false; }
+    if (!nameValid)  { showFieldError('cardName',  'nameError',  'Enter the cardholder name');          ok = false; }
+    if (!expiryValid){ showFieldError('expiry',    'expiryError','Enter expiry as MM / YY');            ok = false; }
+    if (!cvvValid)   { showFieldError('cvv',       'cvvError',   'Enter a 3 or 4 digit CVV');           ok = false; }
+    if (!ok) return;
 
-      let isValid = true;
-
-      if (!cardValid) {
-        document.getElementById("cardError").textContent = "Invalid card number";
-        document.getElementById("cardError").style.display = "block";
-        isValid = false;
-      }
-
-      if (!expiryValid) {
-        document.getElementById("expiryError").textContent = "Invalid expiry format (MM/YY)";
-        document.getElementById("expiryError").style.display = "block";
-        isValid = false;
-      }
-
-      if (!cvvValid) {
-        document.getElementById("cvvError").textContent = "Invalid CVV";
-        document.getElementById("cvvError").style.display = "block";
-        isValid = false;
-      }
-
-      if (!isValid) return;
-
-      alert("Payment Successful! Thank you for your purchase.");
-      window.location.href = "/payment/success";
-    }
-  </script>
+    // Proceed
+    window.location.href = '/payment/success';
+  }
+</script>
 </body>
-
 </html>
