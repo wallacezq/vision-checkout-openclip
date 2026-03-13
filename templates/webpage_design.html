@@ -415,10 +415,28 @@
     .cart-empty p { font-size: 0.85rem; color: var(--muted); }
 
     .cart-row {
-      display: flex; justify-content: space-between; align-items: flex-start;
+      display: flex; justify-content: space-between; align-items: center;
       padding: 13px 0;
       border-bottom: 1px solid var(--border);
       animation: fadeUp 0.2s ease both;
+    }
+    .cart-row-remove {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: var(--radius-sm);
+      font-size: 1rem;
+      line-height: 1;
+      transition: color 0.15s, background 0.15s;
+      flex-shrink: 0;
+      align-self: center;
+      margin-left: 6px;
+    }
+    .cart-row-remove:hover {
+      color: var(--red);
+      background: rgba(247, 110, 110, 0.1);
     }
     @keyframes fadeUp { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
     .cart-row-name { font-size: 0.88rem; font-weight: 700; }
@@ -687,6 +705,7 @@
     <div class="cart-header">
       <span>Name</span>
       <span>Price</span>
+      <span></span>
     </div>
 
     <div class="cart-items" id="cartItems">
@@ -1086,14 +1105,30 @@ function renderCart() {
         <div class="cart-row-unit">RM ${item.Unit_Price.toFixed(2)} / unit</div>
       </div>
       <div class="cart-row-price">RM ${item.Total.toFixed(2)}</div>
+      <button class="cart-row-remove" data-product="${item.Product}" title="Remove one">✕</button>
     </div>`;
   }).join('');
 
-  const sst       = total * SST_RATE;
+  // Attach remove listeners
+  cartRowContainer.querySelectorAll('.cart-row-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = cart.findIndex(c => c.Product === btn.dataset.product);
+      if (i === -1) return;
+      if (cart[i].Quantity > 1) {
+        cart[i].Quantity -= 1;
+        cart[i].Total = cart[i].Quantity * cart[i].Unit_Price;
+      } else {
+        cart.splice(i, 1);
+      }
+      renderCart();
+    });
+  });
+
+  const sst        = total * SST_RATE;
   const grandTotal = total + sst;
   sstAmount.textContent   = `RM ${sst.toFixed(2)}`;
   totalAmount.textContent = `RM ${grandTotal.toFixed(2)}`;
-  payBtn.disabled = empty;
+  payBtn.disabled     = empty;
   downloadBtn.disabled = empty;
 }
 
