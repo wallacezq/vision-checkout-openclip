@@ -5,6 +5,7 @@ Responsible for loading model weights and running inference.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import logging
@@ -26,96 +27,24 @@ from optimum.intel.openvino import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Product label taxonomy
+# Product label taxonomy — loaded from labels.json
 # ---------------------------------------------------------------------------
-LABELS: list[str] = [
-    "Fruit/Apple/Golden-Delicious",
-    "Fruit/Apple/Granny-Smith",
-    "Fruit/Apple/Pink-Lady",
-    "Fruit/Apple/Red-Delicious",
-    "Fruit/Apple/Royal-Gala",
-    "Fruit/Avocado",
-    "Fruit/Banana",
-    "Fruit/Kiwi",
-    "Fruit/Lemon",
-    "Fruit/Lime",
-    "Fruit/Mango",
-    "Fruit/Melon/Cantaloupe",
-    "Fruit/Melon/Galia-Melon",
-    "Fruit/Melon/Honeydew-Melon",
-    "Fruit/Melon/Watermelon",
-    "Fruit/Nectarine",
-    "Fruit/Orange",
-    "Fruit/Papaya",
-    "Fruit/Passion-Fruit",
-    "Fruit/Peach",
-    "Fruit/Pear/Anjou",
-    "Fruit/Pear/Conference",
-    "Fruit/Pear/Kaiser",
-    "Fruit/Pineapple",
-    "Fruit/Plum",
-    "Fruit/Pomegranate",
-    "Fruit/Red-Grapefruit",
-    "Fruit/Satsumas",
-    "Packages/Juice/Bravo-Apple-Juice",
-    "Packages/Juice/Bravo-Orange-Juice",
-    "Packages/Juice/God-Morgon-Apple-Juice",
-    "Packages/Juice/God-Morgon-Orange-Juice",
-    "Packages/Juice/God-Morgon-Orange-Red-Grapefruit-Juice",
-    "Packages/Juice/God-Morgon-Red-Grapefruit-Juice",
-    "Packages/Juice/Tropicana-Apple-Juice",
-    "Packages/Juice/Tropicana-Golden-Grapefruit",
-    "Packages/Juice/Tropicana-Juice-Smooth",
-    "Packages/Juice/Tropicana-Mandarin-Morning",
-    "Packages/Milk/Arla-Ecological-Medium-Fat-Milk",
-    "Packages/Milk/Arla-Lactose-Medium-Fat-Milk",
-    "Packages/Milk/Arla-Medium-Fat-Milk",
-    "Packages/Milk/Arla-Standard-Milk",
-    "Packages/Milk/Garant-Ecological-Medium-Fat-Milk",
-    "Packages/Milk/Garant-Ecological-Standard-Milk",
-    "Packages/Oat-Milk/Oatly-Oat-Milk",
-    "Packages/Oatghurt/Oatly-Natural-Oatghurt",
-    "Packages/Sour-Cream/Arla-Ecological-Sour-Cream",
-    "Packages/Sour-Cream/Arla-Sour-Cream",
-    "Packages/Sour-Milk/Arla-Sour-Milk",
-    "Packages/Soy-Milk/Alpro-Fresh-Soy-Milk",
-    "Packages/Soy-Milk/Alpro-Shelf-Soy-Milk",
-    "Packages/Soyghurt/Alpro-Blueberry-Soyghurt",
-    "Packages/Soyghurt/Alpro-Vanilla-Soyghurt",
-    "Packages/Yoghurt/Arla-Mild-Vanilla-Yoghurt",
-    "Packages/Yoghurt/Arla-Natural-Mild-Low-Fat-Yoghurt",
-    "Packages/Yoghurt/Arla-Natural-Yoghurt",
-    "Packages/Yoghurt/Valio-Vanilla-Yoghurt",
-    "Packages/Yoghurt/Yoggi-Strawberry-Yoghurt",
-    "Packages/Yoghurt/Yoggi-Vanilla-Yoghurt",
-    "Packages/Instant-Noodles/Nissin-Premium-Ramen",
-    "Packages/Instant-Noodles/Shin-Ramyun",
-    "Packages/Chips/Snek-Mi-Mi",
-    "Vegetables/Asparagus",
-    "Vegetables/Aubergine",
-    "Vegetables/Brown-Cap-Mushroom",
-    "Vegetables/Cabbage",
-    "Vegetables/Carrots",
-    "Vegetables/Cucumber",
-    "Vegetables/Garlic",
-    "Vegetables/Ginger",
-    "Vegetables/Leek",
-    "Vegetables/Onion/Yellow-Onion",
-    "Vegetables/Pepper/Green-Bell-Pepper",
-    "Vegetables/Pepper/Orange-Bell-Pepper",
-    "Vegetables/Pepper/Red-Bell-Pepper",
-    "Vegetables/Pepper/Yellow-Bell-Pepper",
-    "Vegetables/Potato/Floury-Potato",
-    "Vegetables/Potato/Solid-Potato",
-    "Vegetables/Potato/Sweet-Potato",
-    "Vegetables/Red-Beet",
-    "Vegetables/Tomato/Beef-Tomato",
-    "Vegetables/Tomato/Regular-Tomato",
-    "Vegetables/Tomato/Vine-Tomato",
-    "Vegetables/Zucchini",
-    "Beverages/Can/Milo",
-    "Beverages/Can/Coke",
-]
+LABELS_PATH = Path(__file__).parent / "labels.json"
+
+
+def load_labels() -> list[str]:
+    """Load product labels from the JSON file."""
+    with open(LABELS_PATH, "r") as f:
+        return json.load(f)
+
+
+def save_labels(labels: list[str]) -> None:
+    """Save product labels to the JSON file."""
+    with open(LABELS_PATH, "w") as f:
+        json.dump(labels, f, indent=4)
+
+
+LABELS: list[str] = load_labels()
 
 # Text prompts used to build zero-shot classifier weights
 CLASS_TEMPLATES: list[str] = [
@@ -191,7 +120,19 @@ class ZeroShotClassifier:
     # Weight helpers
     # ------------------------------------------------------------------
 
-    def _build_weights(self) -> torch.Tensor:
+    def rebuild_weights(self, progress_cb=None) -> None:
+        """Reload labels from disk and regenerate zero-shot classifier weights.
+
+        *progress_cb*, if provided, is called as ``progress_cb(current, total, label)``
+        after each label is encoded.
+        """
+        global LABELS
+        LABELS = load_labels()
+        if ZEROSHOT_WEIGHTS_PATH.exists():
+            ZEROSHOT_WEIGHTS_PATH.unlink()
+        self.zeroshot_weights = self._build_weights(progress_cb=progress_cb)
+
+    def _build_weights(self, progress_cb=None) -> torch.Tensor:
         """Build zero-shot classifier weight matrix from text prompts."""
         logger.info("Building zero-shot weights (one-time, may take a few minutes) …")
         #clip_model = CLIPModel.from_pretrained(MODEL_ID)
@@ -199,8 +140,9 @@ class ZeroShotClassifier:
         clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
         #tokenizer = open_clip.get_tokenizer("ViT-bigG-14-worldwide")
         
+        total = len(LABELS)
         weights = []
-        for label in tqdm(LABELS, desc="Encoding labels"):
+        for i, label in enumerate(tqdm(LABELS, desc="Encoding labels")):
             texts = [t.format(label=label) for t in CLASS_TEMPLATES]
             #inputs = self.processor(text=texts, return_tensors="pt", padding=True)
             with torch.no_grad():
@@ -209,6 +151,8 @@ class ZeroShotClassifier:
             embedding = F.normalize(embeddings, dim=-1).mean(dim=0)
             embedding /= embedding.norm()
             weights.append(embedding)
+            if progress_cb:
+                progress_cb(i + 1, total, label)
         weight_matrix = torch.stack(weights, dim=1)
         torch.save(weight_matrix, ZEROSHOT_WEIGHTS_PATH)
         logger.info("Saved zero-shot weights to %s", ZEROSHOT_WEIGHTS_PATH)

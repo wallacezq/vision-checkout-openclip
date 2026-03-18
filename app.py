@@ -12,16 +12,18 @@ Routes:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import queue
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file
 
 from bill_generator import generate_pdf
-from classifier import ZeroShotClassifier
+from classifier import ZeroShotClassifier, load_labels, save_labels
 from product_db import ProductDatabase
 
 # ---------------------------------------------------------------------------
@@ -182,6 +184,141 @@ def download_bill():
         download_name="receipt.pdf",
         mimetype="application/pdf",
     )
+
+
+# ---------------------------------------------------------------------------
+# Label management routes
+# ---------------------------------------------------------------------------
+
+@app.route("/labels", methods=["GET"])
+def get_labels():
+    """Return the current product label list."""
+    return jsonify({"labels": load_labels()})
+
+
+@app.route("/labels", methods=["POST"])
+def add_label():
+    """
+    Add a new label. Request JSON: { "label": "Category/SubCat/Name" }
+    Optionally set "regenerate": true to rebuild weights immediately.
+    """
+    data = request.get_json(force=True) or {}
+    label = (data.get("label") or "").strip()
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+
+    labels = load_labels()
+    if label in labels:
+        return jsonify({"error": "Label already exists"}), 409
+
+    labels.append(label)
+    save_labels(labels)
+
+    if data.get("regenerate"):
+        classifier.rebuild_weights()
+
+    return jsonify({"labels": labels, "added": label})
+
+
+@app.route("/labels", methods=["PUT"])
+def modify_label():
+    """
+    Modify an existing label.
+    Request JSON: { "old_label": "…", "new_label": "…" }
+    Optionally set "regenerate": true to rebuild weights immediately.
+    """
+    data = request.get_json(force=True) or {}
+    old_label = (data.get("old_label") or "").strip()
+    new_label = (data.get("new_label") or "").strip()
+    if not old_label or not new_label:
+        return jsonify({"error": "old_label and new_label are required"}), 400
+
+    labels = load_labels()
+    if old_label not in labels:
+        return jsonify({"error": f"Label '{old_label}' not found"}), 404
+    if new_label in labels:
+        return jsonify({"error": f"Label '{new_label}' already exists"}), 409
+
+    idx = labels.index(old_label)
+    labels[idx] = new_label
+    save_labels(labels)
+
+    if data.get("regenerate"):
+        classifier.rebuild_weights()
+
+    return jsonify({"labels": labels, "modified": {"old": old_label, "new": new_label}})
+
+
+@app.route("/labels", methods=["DELETE"])
+def delete_label():
+    """
+    Delete a label. Request JSON: { "label": "…" }
+    Optionally set "regenerate": true to rebuild weights immediately.
+    """
+    data = request.get_json(force=True) or {}
+    label = (data.get("label") or "").strip()
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+
+    labels = load_labels()
+    if label not in labels:
+        return jsonify({"error": f"Label '{label}' not found"}), 404
+
+    labels.remove(label)
+    save_labels(labels)
+
+    if data.get("regenerate"):
+        classifier.rebuild_weights()
+
+    return jsonify({"labels": labels, "deleted": label})
+
+
+@app.route("/labels/regenerate", methods=["POST"])
+def regenerate_weights():
+    """Force regeneration of zero-shot classifier weights from current labels."""
+    try:
+        classifier.rebuild_weights()
+        return jsonify({"status": "ok", "message": "Weights regenerated successfully"})
+    except Exception as exc:
+        logger.exception("Error regenerating weights")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/labels/regenerate_stream")
+def regenerate_weights_stream():
+    """SSE endpoint that streams progress while regenerating weights."""
+    progress_queue: queue.Queue = queue.Queue()
+
+    def progress_cb(current: int, total: int, label: str) -> None:
+        progress_queue.put({"current": current, "total": total, "label": label})
+
+    def generate():
+        import threading
+        error_holder: list = []
+
+        def do_rebuild():
+            try:
+                classifier.rebuild_weights(progress_cb=progress_cb)
+            except Exception as exc:
+                error_holder.append(str(exc))
+            finally:
+                progress_queue.put(None)  # sentinel
+
+        t = threading.Thread(target=do_rebuild, daemon=True)
+        t.start()
+
+        while True:
+            item = progress_queue.get()
+            if item is None:
+                if error_holder:
+                    yield f"data: {json.dumps({'error': error_holder[0]})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------
