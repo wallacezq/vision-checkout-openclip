@@ -89,7 +89,10 @@
       display: grid; place-items: center;
       font-size: 17px;
     }
-    .info-btn {
+    .topbar-actions {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .info-btn, .settings-btn {
       width: 28px; height: 28px;
       border-radius: 50%;
       border: 1.5px solid var(--border);
@@ -102,7 +105,8 @@
       display: grid; place-items: center;
       transition: border-color 0.15s, color 0.15s;
     }
-    .info-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .info-btn:hover, .settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .settings-btn svg { width: 15px; height: 15px; }
 
     /* ── Search bar ── */
     .search-wrap {
@@ -193,7 +197,6 @@
     .cat-card[data-cat="pastry"]   .cat-icon svg { color: var(--yellow); }
     .cat-card[data-cat="meat"]     .cat-icon svg { color: var(--orange); }
     .cat-card[data-cat="camera"]   .cat-icon svg { color: var(--teal); }
-    .cat-card[data-cat="labels"]   .cat-icon svg { color: var(--green); }
 
     /* ── Scanner area (shown when camera tab active) ── */
     .scanner-area {
@@ -502,9 +505,27 @@
     .product-name { font-size: 0.85rem; font-weight: 700; }
     .product-price { font-size: 0.82rem; font-weight: 800; color: var(--accent); }
 
-    /* ── Label Management Panel ── */
-    .label-mgmt { display: none; flex-direction: column; gap: 12px; }
-    .label-mgmt.visible { display: flex; }
+    /* ── Settings Panel ── */
+    .settings-panel { display: none; flex-direction: column; gap: 16px; flex: 1; }
+    .settings-panel.visible { display: flex; }
+    .settings-title {
+      font-size: 1.1rem; font-weight: 900; letter-spacing: -0.3px;
+    }
+    .settings-section {
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .settings-section-header {
+      font-size: 0.72rem; font-weight: 800; text-transform: uppercase;
+      letter-spacing: 1.5px; color: var(--muted);
+    }
+    .regen-card {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px 16px; background: var(--card); border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .regen-card-info { display: flex; flex-direction: column; gap: 2px; }
+    .regen-card-title { font-size: 0.85rem; font-weight: 700; }
+    .regen-card-sub { font-size: 0.68rem; color: var(--muted); font-family: var(--font-body); }
     .label-toolbar { display: flex; gap: 8px; }
     .label-toolbar input {
       flex: 1; background: var(--card); border: 1.5px solid var(--border);
@@ -564,13 +585,13 @@
     .label-btn-del { color: var(--red); }
     .label-btn-del:hover { border-color: var(--red); background: rgba(247,110,110,0.1); }
     .label-count { font-size: 0.72rem; color: var(--muted); font-family: var(--font-body); }
-    .label-regen-bar {
-      display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 14px; background: rgba(62,207,142,0.06);
-      border: 1.5px solid rgba(62,207,142,0.25); border-radius: var(--radius-sm);
+    .label-changed-banner {
+      display: none; align-items: center; gap: 8px;
+      padding: 8px 12px; background: rgba(247,201,110,0.08);
+      border: 1.5px dashed rgba(247,201,110,0.35); border-radius: var(--radius-sm);
+      font-size: 0.75rem; color: var(--yellow); font-weight: 700;
     }
-    .label-regen-bar .regen-info { font-size: 0.78rem; color: var(--muted); }
-    .label-regen-bar .regen-info strong { color: var(--green); }
+    .label-changed-banner.visible { display: flex; }
     .btn-regen {
       background: var(--green); color: #12141c; border: none;
       border-radius: var(--radius-sm); padding: 8px 16px;
@@ -669,7 +690,15 @@
         <div class="icon-badge">🛒</div>
         Automatic Vision-based Checkout
       </div>
-      <button class="info-btn" title="About">i</button>
+      <div class="topbar-actions">
+        <button class="settings-btn" id="settingsBtn" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+        <button class="info-btn" title="About">i</button>
+      </div>
     </div>
 
     <!-- Search -->
@@ -747,17 +776,6 @@
             <circle cx="32" cy="35" r="5"/>
             <path d="M22 18 L26 10 H38 L42 18"/>
             <circle cx="50" cy="26" r="2" fill="currentColor"/>
-          </svg>
-        </div>
-      </div>
-
-      <!-- Labels management card -->
-      <div class="cat-card" data-cat="labels" id="labelsCatCard">
-        <span class="cat-label">Labels</span>
-        <div class="cat-icon">
-          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10 12h24l16 20-16 20H10V12z"/>
-            <circle cx="20" cy="32" r="4" fill="currentColor"/>
           </svg>
         </div>
       </div>
@@ -841,43 +859,59 @@
 
     </div><!-- /scanner-area -->
 
-    <!-- ── Label Management Panel ── -->
-    <div class="label-mgmt" id="labelMgmt">
-      <button class="btn-outline" id="backToGridFromLabels" style="width:auto;padding:7px 14px;align-self:flex-start;display:flex;align-items:center;gap:6px;">
+    <!-- ── Settings Panel ── -->
+    <div class="settings-panel" id="settingsPanel">
+      <button class="btn-outline" id="backFromSettings" style="width:auto;padding:7px 14px;align-self:flex-start;display:flex;align-items:center;gap:6px;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
         Back
       </button>
 
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <div style="font-size:1rem;font-weight:800">Product Labels</div>
-        <span class="label-count" id="labelCount"></span>
-      </div>
+      <div class="settings-title">Settings</div>
 
-      <div class="label-toolbar">
-        <input type="text" id="newLabelInput" placeholder="e.g. Fruit/Apple/Fuji"/>
-        <button id="addLabelBtn">+ Add</button>
-      </div>
-
-      <div class="label-search">
-        <input type="text" id="labelSearchInput" placeholder="Filter labels…"/>
-      </div>
-
-      <div class="label-list-container" id="labelListContainer"></div>
-
-      <div class="label-regen-bar" id="regenBar" style="display:none">
-        <div class="regen-info"><strong>Labels changed.</strong> Regenerate model weights to apply.</div>
-        <button class="btn-regen" id="regenBtn">Regenerate</button>
-      </div>
-
-      <div class="regen-progress" id="regenProgress">
-        <div class="regen-progress-header">
-          <span class="regen-progress-label" id="regenProgressLabel">Initialising…</span>
-          <span class="regen-progress-pct" id="regenProgressPct">0%</span>
+      <!-- Model section -->
+      <div class="settings-section">
+        <div class="settings-section-header">Model</div>
+        <div class="regen-card">
+          <div class="regen-card-info">
+            <div class="regen-card-title">Label Embeddings</div>
+            <div class="regen-card-sub">Regenerate clip_zeroshot_cls.pth from current labels</div>
+          </div>
+          <button class="btn-regen" id="regenBtn">Regenerate</button>
         </div>
-        <div class="regen-progress-track">
-          <div class="regen-progress-fill" id="regenProgressFill"></div>
+        <div class="regen-progress" id="regenProgress">
+          <div class="regen-progress-header">
+            <span class="regen-progress-label" id="regenProgressLabel">Initialising…</span>
+            <span class="regen-progress-pct" id="regenProgressPct">0%</span>
+          </div>
+          <div class="regen-progress-track">
+            <div class="regen-progress-fill" id="regenProgressFill"></div>
+          </div>
+          <div class="regen-progress-sub" id="regenProgressSub">0 / 0 labels encoded</div>
         </div>
-        <div class="regen-progress-sub" id="regenProgressSub">0 / 0 labels encoded</div>
+      </div>
+
+      <!-- Label management section -->
+      <div class="settings-section" style="flex:1;display:flex;flex-direction:column">
+        <div class="settings-section-header">Product Labels</div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span class="label-count" id="labelCount"></span>
+        </div>
+
+        <div class="label-changed-banner" id="labelChangedBanner">
+          ⚠ Labels changed — regenerate embeddings to apply.
+        </div>
+
+        <div class="label-toolbar">
+          <input type="text" id="newLabelInput" placeholder="e.g. Fruit/Apple/Fuji"/>
+          <button id="addLabelBtn">+ Add</button>
+        </div>
+
+        <div class="label-search">
+          <input type="text" id="labelSearchInput" placeholder="Filter labels…"/>
+        </div>
+
+        <div class="label-list-container" id="labelListContainer"></div>
       </div>
 
       <div class="label-status" id="labelStatus"></div>
@@ -953,6 +987,7 @@ let inputMode = 'upload'; // 'upload' | 'camera'
 // ════════════════════════════════════════════
 const categoryGrid    = document.getElementById('categoryGrid');
 const scannerArea     = document.getElementById('scannerArea');
+const settingsPanel   = document.getElementById('settingsPanel');
 const cameraCatCard   = document.getElementById('cameraCatCard');
 const backToGrid      = document.getElementById('backToGrid');
 const tabUpload       = document.getElementById('tabUpload');
@@ -994,8 +1029,6 @@ document.querySelectorAll('.cat-card').forEach(card => {
   card.addEventListener('click', () => {
     if (card.dataset.cat === 'camera') {
       openScanner();
-    } else if (card.dataset.cat === 'labels') {
-      openLabelMgmt();
     } else {
       document.querySelectorAll('.cat-card').forEach(c => c.classList.remove('active'));
       card.classList.add('active');
@@ -1005,8 +1038,10 @@ document.querySelectorAll('.cat-card').forEach(card => {
 });
 
 function openScanner() {
+  settingsPanel.classList.remove('visible');
   cameraCatCard.classList.add('active');
   categoryGrid.style.display = 'none';
+  document.querySelector('.search-wrap').style.display = 'none';
   scannerArea.classList.add('visible');
   setStatus('', 'Ready to scan');
 }
@@ -1015,6 +1050,7 @@ backToGrid.addEventListener('click', () => {
   stopCamera();
   scannerArea.classList.remove('visible');
   categoryGrid.style.display = '';
+  document.querySelector('.search-wrap').style.display = '';
   cameraCatCard.classList.remove('active');
   predictionPanel.style.display = 'none';
   predList.innerHTML = '';
@@ -1367,17 +1403,16 @@ downloadBtn.addEventListener('click', async () => {
 window.addEventListener('beforeunload', stopCamera);
 
 // ════════════════════════════════════════════
-// Label Management
+// Settings & Label Management
 // ════════════════════════════════════════════
-const labelMgmt          = document.getElementById('labelMgmt');
-const labelsCatCard      = document.getElementById('labelsCatCard');
-const backToGridFromLabels = document.getElementById('backToGridFromLabels');
+const settingsBtn        = document.getElementById('settingsBtn');
+const backFromSettings   = document.getElementById('backFromSettings');
 const newLabelInput      = document.getElementById('newLabelInput');
 const addLabelBtn        = document.getElementById('addLabelBtn');
 const labelSearchInput   = document.getElementById('labelSearchInput');
 const labelListContainer = document.getElementById('labelListContainer');
 const labelCount         = document.getElementById('labelCount');
-const regenBar           = document.getElementById('regenBar');
+const labelChangedBanner = document.getElementById('labelChangedBanner');
 const regenBtn           = document.getElementById('regenBtn');
 const labelStatusEl      = document.getElementById('labelStatus');
 const editOverlay        = document.getElementById('editOverlay');
@@ -1389,17 +1424,21 @@ let allLabels = [];
 let labelsChanged = false;
 let editingLabel = null;
 
-function openLabelMgmt() {
-  labelsCatCard.classList.add('active');
+settingsBtn.addEventListener('click', () => {
+  // Hide other panels
+  scannerArea.classList.remove('visible');
+  stopCamera();
   categoryGrid.style.display = 'none';
-  labelMgmt.classList.add('visible');
+  document.querySelector('.search-wrap').style.display = 'none';
+  settingsPanel.classList.add('visible');
   fetchLabels();
-}
+});
 
-backToGridFromLabels.addEventListener('click', () => {
-  labelMgmt.classList.remove('visible');
+backFromSettings.addEventListener('click', () => {
+  settingsPanel.classList.remove('visible');
   categoryGrid.style.display = '';
-  labelsCatCard.classList.remove('active');
+  document.querySelector('.search-wrap').style.display = '';
+  document.querySelectorAll('.cat-card').forEach(c => c.classList.remove('active'));
 });
 
 async function fetchLabels() {
@@ -1469,7 +1508,7 @@ addLabelBtn.addEventListener('click', async () => {
     allLabels = data.labels;
     newLabelInput.value = '';
     labelsChanged = true;
-    regenBar.style.display = 'flex';
+    labelChangedBanner.classList.add('visible');
     renderLabelList();
     setLabelStatus('success', `Added: ${label}`);
   } catch (err) {
@@ -1495,7 +1534,7 @@ async function deleteLabel(label) {
     if (data.error) { setLabelStatus('error', data.error); return; }
     allLabels = data.labels;
     labelsChanged = true;
-    regenBar.style.display = 'flex';
+    labelChangedBanner.classList.add('visible');
     renderLabelList();
     setLabelStatus('success', `Deleted: ${label}`);
   } catch (err) {
@@ -1537,7 +1576,7 @@ editSaveBtn.addEventListener('click', async () => {
     if (data.error) { setLabelStatus('error', data.error); return; }
     allLabels = data.labels;
     labelsChanged = true;
-    regenBar.style.display = 'flex';
+    labelChangedBanner.classList.add('visible');
     renderLabelList();
     setLabelStatus('success', `Renamed to: ${newLabel}`);
   } catch (err) {
@@ -1554,7 +1593,6 @@ editLabelInput.addEventListener('keydown', e => {
 
 regenBtn.addEventListener('click', () => {
   regenBtn.disabled = true;
-  regenBar.style.display = 'none';
   const progressEl    = document.getElementById('regenProgress');
   const progressLabel = document.getElementById('regenProgressLabel');
   const progressPct   = document.getElementById('regenProgressPct');
@@ -1576,7 +1614,6 @@ regenBtn.addEventListener('click', () => {
     if (data.error) {
       evtSource.close();
       progressEl.classList.remove('visible');
-      regenBar.style.display = 'flex';
       regenBtn.disabled = false;
       setLabelStatus('error', data.error);
       return;
@@ -1588,6 +1625,7 @@ regenBtn.addEventListener('click', () => {
       progressPct.textContent = '100%';
       progressLabel.textContent = 'Complete!';
       labelsChanged = false;
+      labelChangedBanner.classList.remove('visible');
       setTimeout(() => {
         progressEl.classList.remove('visible');
         regenBtn.disabled = false;
@@ -1608,7 +1646,6 @@ regenBtn.addEventListener('click', () => {
   evtSource.onerror = () => {
     evtSource.close();
     progressEl.classList.remove('visible');
-    regenBar.style.display = 'flex';
     regenBtn.disabled = false;
     setLabelStatus('error', 'Connection lost during regeneration');
   };
