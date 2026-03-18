@@ -57,15 +57,51 @@ CLASS_TEMPLATES: list[str] = [
     "a photo of {label} in red bounding box."
 ]
 
-OPENCLIP_MODEL_ID = "ViT-bigG-14-worldwide"
-MODEL_ID = "timm/vit_gigantic_patch14_clip_378.metaclip2_worldwide"
-PRETRAINED = "metaclip2_worldwide"
+# ---------------------------------------------------------------------------
+# Available model configurations
+# ---------------------------------------------------------------------------
+MODEL_REGISTRY: dict[str, dict] = {
+    "metaclip2-vit-bigG-14": {
+        "display_name": "MetaCLIP2 ViT-bigG-14 Worldwide",
+        "openclip_model_id": "ViT-bigG-14-worldwide",
+        "model_id": "timm/vit_gigantic_patch14_clip_378.metaclip2_worldwide",
+        "pretrained": "metaclip2_worldwide",
+    },
+    "dfn5b-vit-H-14": {
+        "display_name": "Apple DFN5B CLIP ViT-H-14-378",
+        "openclip_model_id": "ViT-H-14-378-quickgelu",
+        "model_id": "apple/DFN5B-CLIP-ViT-H-14-378",
+        "pretrained": "dfn5b",
+    },
+}
 
-#OPENCLIP_MODEL_ID = "ViT-H-14-378-quickgelu"
-#MODEL_ID = "apple/DFN5B-CLIP-ViT-H-14-378"
-#PRETRAINED = "dfn5b"
-#MODEL_ID = "timm/vit_gigantic_patch14_clip_378.metaclip2_worldwide"
-#MODEL_ID = "facebook/metaclip-2-worldwide-giant-378"
+MODEL_CONFIG_PATH = Path(__file__).parent / "model_config.json"
+
+
+def load_model_config() -> str:
+    """Return the currently selected model key."""
+    if MODEL_CONFIG_PATH.exists():
+        with open(MODEL_CONFIG_PATH, "r") as f:
+            data = json.load(f)
+            key = data.get("model")
+            if key in MODEL_REGISTRY:
+                return key
+    return "metaclip2-vit-bigG-14"  # default
+
+
+def save_model_config(model_key: str) -> None:
+    """Persist the selected model key."""
+    with open(MODEL_CONFIG_PATH, "w") as f:
+        json.dump({"model": model_key}, f, indent=4)
+
+
+# Resolve active model from config
+_active_model_key = load_model_config()
+_active_model = MODEL_REGISTRY[_active_model_key]
+
+OPENCLIP_MODEL_ID = _active_model["openclip_model_id"]
+MODEL_ID = _active_model["model_id"]
+PRETRAINED = _active_model["pretrained"]
 
 ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.pth")
 OV_DEVICE = "GPU"
@@ -115,6 +151,46 @@ class ZeroShotClassifier:
                 ).save_pretrained(self.model_dir)
 
         self.zeroshot_weights = self._load_or_build_weights()
+
+    # ------------------------------------------------------------------
+    # Model switching
+    # ------------------------------------------------------------------
+
+    @property
+    def active_model_key(self) -> str:
+        return load_model_config()
+
+    def switch_model(self, model_key: str, progress_cb=None) -> None:
+        """Switch to a different CLIP model and regenerate everything."""
+        global OPENCLIP_MODEL_ID, MODEL_ID, PRETRAINED
+
+        if model_key not in MODEL_REGISTRY:
+            raise ValueError(f"Unknown model key: {model_key}")
+
+        cfg = MODEL_REGISTRY[model_key]
+        OPENCLIP_MODEL_ID = cfg["openclip_model_id"]
+        MODEL_ID = cfg["model_id"]
+        PRETRAINED = cfg["pretrained"]
+        save_model_config(model_key)
+
+        # Rebuild tokenizer & processor for the new model
+        clip_model, _, preprocess = open_clip.create_model_and_transforms(
+            OPENCLIP_MODEL_ID, pretrained=PRETRAINED
+        )
+        self.tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
+        self.processor = AutoImageProcessor.from_pretrained(MODEL_ID)
+
+        # Rebuild OV model directory
+        base = Path(f"{MODEL_ID.split('/')[-1]}-openclip")
+        self.model_dir = base / "FP16"
+        if not self.model_dir.exists():
+            logger.info("Exporting FP16 OV model for %s …", MODEL_ID)
+            OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
+                MODEL_ID
+            ).save_pretrained(self.model_dir)
+
+        # Regenerate label embeddings
+        self.rebuild_weights(progress_cb=progress_cb)
 
     # ------------------------------------------------------------------
     # Weight helpers

@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request, send_file
 
 from bill_generator import generate_pdf
-from classifier import ZeroShotClassifier, load_labels, save_labels
+from classifier import ZeroShotClassifier, load_labels, save_labels, MODEL_REGISTRY, load_model_config
 from product_db import ProductDatabase
 
 # ---------------------------------------------------------------------------
@@ -314,6 +314,65 @@ def regenerate_weights_stream():
                     yield f"data: {json.dumps({'error': error_holder[0]})}\n\n"
                 else:
                     yield f"data: {json.dumps({'done': True})}\n\n"
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# Model selection routes
+# ---------------------------------------------------------------------------
+
+@app.route("/model", methods=["GET"])
+def get_model():
+    """Return available models and the currently active one."""
+    active = load_model_config()
+    models = [
+        {"key": k, "display_name": v["display_name"], "active": k == active}
+        for k, v in MODEL_REGISTRY.items()
+    ]
+    return jsonify({"models": models, "active": active})
+
+
+@app.route("/model/switch_stream")
+def switch_model_stream():
+    """SSE endpoint: switch model and stream regeneration progress."""
+    model_key = request.args.get("model", "").strip()
+    if not model_key or model_key not in MODEL_REGISTRY:
+        return jsonify({"error": f"Unknown model key: {model_key}"}), 400
+
+    if model_key == load_model_config():
+        return jsonify({"error": "Already using this model"}), 409
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def progress_cb(current: int, total: int, label: str) -> None:
+        progress_queue.put({"current": current, "total": total, "label": label})
+
+    def generate():
+        import threading
+        error_holder: list = []
+
+        def do_switch():
+            try:
+                classifier.switch_model(model_key, progress_cb=progress_cb)
+            except Exception as exc:
+                error_holder.append(str(exc))
+            finally:
+                progress_queue.put(None)
+
+        t = threading.Thread(target=do_switch, daemon=True)
+        t.start()
+
+        while True:
+            item = progress_queue.get()
+            if item is None:
+                if error_holder:
+                    yield f"data: {json.dumps({'error': error_holder[0]})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'done': True, 'model': model_key})}\n\n"
                 break
             yield f"data: {json.dumps(item)}\n\n"
 

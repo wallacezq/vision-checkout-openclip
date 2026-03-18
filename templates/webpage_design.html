@@ -526,6 +526,27 @@
     .regen-card-info { display: flex; flex-direction: column; gap: 2px; }
     .regen-card-title { font-size: 0.85rem; font-weight: 700; }
     .regen-card-sub { font-size: 0.68rem; color: var(--muted); font-family: var(--font-body); }
+    .model-select-wrap {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px 16px; background: var(--card); border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .model-select-wrap label {
+      font-size: 0.85rem; font-weight: 700; white-space: nowrap;
+    }
+    .model-select {
+      flex: 1; background: var(--bg); border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm); padding: 8px 12px;
+      font-family: var(--font-body); font-size: 0.82rem; color: var(--text);
+      outline: none; cursor: pointer; appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238891b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+    }
+    .model-select:focus { border-color: var(--accent); }
+    .model-select option { background: var(--panel); color: var(--text); }
     .label-toolbar { display: flex; gap: 8px; }
     .label-toolbar input {
       flex: 1; background: var(--card); border: 1.5px solid var(--border);
@@ -871,6 +892,10 @@
       <!-- Model section -->
       <div class="settings-section">
         <div class="settings-section-header">Model</div>
+        <div class="model-select-wrap">
+          <label for="modelSelect">CLIP Model</label>
+          <select class="model-select" id="modelSelect"></select>
+        </div>
         <div class="regen-card">
           <div class="regen-card-info">
             <div class="regen-card-title">Label Embeddings</div>
@@ -1414,6 +1439,7 @@ const labelListContainer = document.getElementById('labelListContainer');
 const labelCount         = document.getElementById('labelCount');
 const labelChangedBanner = document.getElementById('labelChangedBanner');
 const regenBtn           = document.getElementById('regenBtn');
+const modelSelect        = document.getElementById('modelSelect');
 const labelStatusEl      = document.getElementById('labelStatus');
 const editOverlay        = document.getElementById('editOverlay');
 const editLabelInput     = document.getElementById('editLabelInput');
@@ -1432,6 +1458,7 @@ settingsBtn.addEventListener('click', () => {
   document.querySelector('.search-wrap').style.display = 'none';
   settingsPanel.classList.add('visible');
   fetchLabels();
+  fetchModels();
 });
 
 backFromSettings.addEventListener('click', () => {
@@ -1655,6 +1682,98 @@ function setLabelStatus(type, msg) {
   labelStatusEl.className = 'label-status' + (type ? ' ' + type : '');
   labelStatusEl.textContent = msg;
 }
+
+// ════════════════════════════════════════════
+// Model Selection
+// ════════════════════════════════════════════
+let currentModelKey = '';
+
+async function fetchModels() {
+  try {
+    const res = await fetch('/model');
+    const data = await res.json();
+    modelSelect.innerHTML = '';
+    (data.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.key;
+      opt.textContent = m.display_name;
+      if (m.active) { opt.selected = true; currentModelKey = m.key; }
+      modelSelect.appendChild(opt);
+    });
+  } catch (err) {
+    setLabelStatus('error', 'Failed to load models: ' + err.message);
+  }
+}
+
+modelSelect.addEventListener('change', () => {
+  const newKey = modelSelect.value;
+  if (newKey === currentModelKey) return;
+
+  modelSelect.disabled = true;
+  regenBtn.disabled = true;
+
+  const progressEl    = document.getElementById('regenProgress');
+  const progressLabel = document.getElementById('regenProgressLabel');
+  const progressPct   = document.getElementById('regenProgressPct');
+  const progressFill  = document.getElementById('regenProgressFill');
+  const progressSub   = document.getElementById('regenProgressSub');
+
+  progressEl.classList.add('visible');
+  progressLabel.textContent = 'Switching model…';
+  progressPct.textContent = '0%';
+  progressFill.style.width = '0%';
+  progressSub.textContent = 'Loading new model…';
+  setLabelStatus('', '');
+
+  const evtSource = new EventSource('/model/switch_stream?model=' + encodeURIComponent(newKey));
+
+  evtSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.error) {
+      evtSource.close();
+      progressEl.classList.remove('visible');
+      modelSelect.value = currentModelKey;
+      modelSelect.disabled = false;
+      regenBtn.disabled = false;
+      setLabelStatus('error', data.error);
+      return;
+    }
+
+    if (data.done) {
+      evtSource.close();
+      progressFill.style.width = '100%';
+      progressPct.textContent = '100%';
+      progressLabel.textContent = 'Complete!';
+      currentModelKey = data.model;
+      labelsChanged = false;
+      labelChangedBanner.classList.remove('visible');
+      setTimeout(() => {
+        progressEl.classList.remove('visible');
+        modelSelect.disabled = false;
+        regenBtn.disabled = false;
+        setLabelStatus('success', 'Model switched & weights regenerated!');
+      }, 600);
+      return;
+    }
+
+    const pct = Math.round((data.current / data.total) * 100);
+    const shortName = data.label.split('/').pop().replace(/-/g, ' ');
+    progressFill.style.width = pct + '%';
+    progressPct.textContent = pct + '%';
+    progressLabel.textContent = shortName;
+    progressSub.textContent = `${data.current} / ${data.total} labels encoded`;
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    progressEl.classList.remove('visible');
+    modelSelect.value = currentModelKey;
+    modelSelect.disabled = false;
+    regenBtn.disabled = false;
+    setLabelStatus('error', 'Connection lost during model switch');
+  };
+});
 </script>
 </body>
 </html>
