@@ -2,57 +2,74 @@
 
 Automatic vision-based retail checkout demo: upload a product image, run **zero-shot** classification (CLIP/OpenCLIP accelerated with **OpenVINO**), show the top predictions, and generate a **PDF receipt**.
 
-## What’s in this repo
+## What's in this repo
 
-At a high level, this is a single Flask web app with three main parts:
+A single Flask web app with three main parts:
 
 1. **Web server + UI** (`app.py` + `templates/`)
 2. **Zero-shot vision classifier** (`classifier.py`)
 3. **Billing / pricing + PDF receipt** (`product_db.py`, `bill_generator.py`)
 
-## Architecture (high level)
+## Architecture
 
 ### Request flow
 
-1. **User opens the UI** (`GET /`)  
-   The app serves a static HTML page (`templates/webpage_design.html`).
+1. **User opens the UI** (`GET /`) -- serves `templates/webpage_design.html`.
 
-2. **User uploads an image** (`POST /upload`)  
+2. **User uploads an image** (`POST /upload`)
    - Flask receives a multipart file upload (`image`).
    - The image is saved into `uploads/` and decoded with OpenCV.
    - The classifier runs zero-shot inference and returns **top-5 predictions**.
    - If the top-1 confidence is below a configurable threshold, the result is treated as **Unknown** and no bill item is created.
-   - Otherwise, the predicted class’ `short_name` (last path segment) is used to look up a unit price in a CSV-backed product DB and a bill line item is returned.
+   - Otherwise, the predicted class's `short_name` (last path segment) is used to look up a unit price in the CSV-backed product DB and a bill line item is returned.
 
-3. **User confirms or overrides the product** (`POST /confirm_product`)  
-   If the user selects one of the other top predictions, the server builds a bill item from the selected `short_name`.
+3. **User confirms or overrides the product** (`POST /confirm_product`) -- builds a bill item from the selected `short_name`.
 
-4. **Payment pages** (`GET /payment`, `GET /payment/success`)  
-   Served as static HTML from `templates/`.
+4. **Payment pages** (`GET /payment`, `GET /payment/success`) -- styled dark-themed HTML matching the main UI.
 
-5. **Receipt download** (`POST /download_bill`)  
-   The frontend posts the full bill + totals; the server generates a **PDF** receipt using ReportLab and returns it as a file download.
+5. **Receipt download** (`POST /download_bill`) -- generates a **PDF** receipt via ReportLab and returns it as a file download.
 
-### Components
+### Key files
 
-#### `app.py` (Flask entry point)
-- Initializes shared services once at startup:
-  - `ZeroShotClassifier(...)`
-  - `ProductDatabase(product_prices.csv)`
-- Exposes REST-ish endpoints for upload/classify, confirm product, and PDF receipt generation.
+| File | Purpose |
+|---|---|
+| `app.py` | Flask entry point. Initializes `ZeroShotClassifier` and `ProductDatabase`, exposes all REST endpoints. |
+| `classifier.py` | OpenCLIP/OpenVINO zero-shot classifier. Loads labels from `labels.json`, supports multiple CLIP models via `MODEL_REGISTRY`, caches weights to `clip_zeroshot_cls.pth`. |
+| `labels.json` | Product label taxonomy as a JSON array (e.g. `Fruit/Apple/Granny-Smith`). Editable at runtime via the Settings UI. |
+| `model_config.json` | Persists which CLIP model is currently active (auto-created on first model switch). |
+| `product_db.py` | CSV price lookup. Loads `product_prices.csv` (columns: Product, Price). |
+| `bill_generator.py` | Generates PDF receipts with SST 6% (currency RM). |
+| `templates/webpage_design.html` | Main checkout UI (dark theme, single-page app). |
+| `templates/payment.html` | Payment form page. |
+| `templates/success.html` | Payment success page. |
 
-#### `classifier.py` (OpenCLIP/OpenVINO zero-shot classifier)
-- Maintains a fixed label taxonomy (`LABELS`) like `Fruit/Apple/Granny-Smith`.
-- Builds a *zero-shot weight matrix* from text prompts (`CLASS_TEMPLATES`) and caches it to `clip_zeroshot_cls.pth`.
-- Uses **Optimum Intel OpenVINO** wrappers to export/load an OpenVINO OpenCLIP model and run visual inference.
-- Produces `Prediction` objects: `{label, short_name, confidence, is_unknown}`.
+## Features
 
-#### `product_db.py` (CSV price lookup)
-- Loads `product_prices.csv` (expected columns: Product, Price).
-- Builds bill line items with `Unit_Price` and `Total`.
+### Settings page
 
-#### `bill_generator.py` (PDF)
-- Generates a formatted receipt (currency RM) with **SST 6%**.
+Accessible via the gear icon in the top bar. Contains:
+
+- **Model selection** -- Switch between available CLIP models:
+  - MetaCLIP2 ViT-bigG-14 Worldwide (default)
+  - Apple DFN5B CLIP ViT-H-14-378
+  - Switching automatically regenerates label embeddings with a live progress bar.
+- **Label embeddings** -- An always-visible "Regenerate" button to rebuild `clip_zeroshot_cls.pth` at any time. Progress is streamed via Server-Sent Events (SSE).
+- **Product label management** -- Add, edit, and delete product labels with:
+  - Real-time search/filter
+  - Input validation enforcing the `Category/Sub/Name` format (alphanumeric + hyphens, at least 2 `/`-separated segments)
+  - Format tooltip and hint text
+  - A warning banner when labels have changed and embeddings need regeneration
+
+### Vision Scan
+
+- Upload an image or use the device camera to capture a product photo.
+- Top-5 predictions with confidence bars and "Unknown" detection when confidence is below threshold.
+- Click any prediction to override the selection and update the cart.
+
+### Checkout
+
+- Cart with quantity tracking, per-unit pricing, SST (6%) calculation.
+- PDF receipt download and payment flow.
 
 ## Technology stack
 
@@ -72,9 +89,10 @@ See `requirements.txt` for the full dependency list.
 ## Setup
 
 ### Prerequisites
+
 - Python 3.10+ recommended
 - A working environment for PyTorch + OpenVINO (CPU works; GPU depends on your OpenVINO setup)
-- `product_prices.csv` present at the repo root (used by `ProductDatabase`)
+- `product_prices.csv` present at the repo root
 
 ### Install
 
@@ -91,9 +109,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Then open:
-
-- http://localhost:5000
+Then open http://localhost:5000
 
 ### Configuration (environment variables)
 
@@ -116,13 +132,24 @@ python app.py
 
 - **First run can be slow**: the app may export an OpenVINO model and/or build zero-shot weights (cached to `clip_zeroshot_cls.pth`).
 - If you see errors about OpenVINO GPU, try `OV_DEVICE=CPU`.
-- If `product_prices.csv` is missing or a predicted `short_name` doesn’t exist in the CSV, `/upload` may return `bill_item: null` (or `/confirm_product` can return a 404).
+- If `product_prices.csv` is missing or a predicted `short_name` doesn't exist in the CSV, `/upload` may return `bill_item: null` (or `/confirm_product` can return a 404).
+- **Model switching** exports a new OV model directory if it doesn't already exist, which can also take time on first use.
 
 ## API summary
 
-- `GET /` → main UI
-- `POST /upload` → `{ top5: [...], bill_item, is_unknown, threshold }`
-- `POST /confirm_product` → `{ bill_item }`
-- `GET /payment` → payment page
-- `GET /payment/success` → success page
-- `POST /download_bill` → PDF receipt download
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Main UI |
+| `POST` | `/upload` | Classify image, return top-5 + bill item |
+| `POST` | `/confirm_product` | Override product selection |
+| `GET` | `/payment` | Payment page |
+| `GET` | `/payment/success` | Success page |
+| `POST` | `/download_bill` | PDF receipt download |
+| `GET` | `/labels` | Get current label list |
+| `POST` | `/labels` | Add a label |
+| `PUT` | `/labels` | Modify a label |
+| `DELETE` | `/labels` | Delete a label |
+| `POST` | `/labels/regenerate` | Rebuild `clip_zeroshot_cls.pth` |
+| `GET` | `/labels/regenerate_stream` | SSE stream of regeneration progress |
+| `GET` | `/model` | Available models + active selection |
+| `GET` | `/model/switch_stream?model=<key>` | SSE stream: switch model + regenerate |
