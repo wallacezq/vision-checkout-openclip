@@ -12,6 +12,7 @@ Routes:
 """
 from __future__ import annotations
 
+import re
 import json
 import logging
 import os
@@ -190,6 +191,22 @@ def download_bill():
 # Label management routes
 # ---------------------------------------------------------------------------
 
+# Label format: at least 2 segments separated by '/', each segment is
+# alphanumeric (plus hyphens), e.g. "Fruit/Apple/Granny-Smith".
+_LABEL_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9-]*)+$')
+
+
+def _validate_label(label: str) -> str | None:
+    """Return an error message if *label* is invalid, else None."""
+    if not label:
+        return "label is required"
+    if not _LABEL_RE.match(label):
+        return (
+            "Invalid label format. Use Category/SubCategory/Name with "
+            "alphanumeric characters and hyphens (e.g. Fruit/Apple/Fuji)."
+        )
+    return None
+
 @app.route("/labels", methods=["GET"])
 def get_labels():
     """Return the current product label list."""
@@ -204,8 +221,9 @@ def add_label():
     """
     data = request.get_json(force=True) or {}
     label = (data.get("label") or "").strip()
-    if not label:
-        return jsonify({"error": "label is required"}), 400
+    err = _validate_label(label)
+    if err:
+        return jsonify({"error": err}), 400
 
     labels = load_labels()
     if label in labels:
@@ -230,8 +248,11 @@ def modify_label():
     data = request.get_json(force=True) or {}
     old_label = (data.get("old_label") or "").strip()
     new_label = (data.get("new_label") or "").strip()
-    if not old_label or not new_label:
-        return jsonify({"error": "old_label and new_label are required"}), 400
+    if not old_label:
+        return jsonify({"error": "old_label is required"}), 400
+    err = _validate_label(new_label)
+    if err:
+        return jsonify({"error": err}), 400
 
     labels = load_labels()
     if old_label not in labels:

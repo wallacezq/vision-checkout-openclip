@@ -563,6 +563,18 @@
     }
     .label-toolbar button:hover { background: var(--accent-h); }
     .label-toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .label-format-hint {
+      font-size: 0.68rem; color: var(--muted); font-family: var(--font-body);
+      margin-top: -4px; line-height: 1.4;
+    }
+    .label-format-hint code {
+      background: var(--card); padding: 1px 5px; border-radius: 3px;
+      font-size: 0.66rem; color: var(--accent);
+    }
+    .label-input-error {
+      font-size: 0.7rem; color: var(--red); font-family: var(--font-body);
+      min-height: 16px;
+    }
     .label-search {
       position: relative;
     }
@@ -928,9 +940,12 @@
         </div>
 
         <div class="label-toolbar">
-          <input type="text" id="newLabelInput" placeholder="e.g. Fruit/Apple/Fuji"/>
+          <input type="text" id="newLabelInput" placeholder="e.g. Fruit/Apple/Fuji"
+                 title="Format: Category/SubCategory/Name — use letters, numbers, and hyphens separated by /"/>
           <button id="addLabelBtn">+ Add</button>
         </div>
+        <div class="label-format-hint">Format: <code>Category/Sub/Name</code> — letters, numbers &amp; hyphens, at least 2 segments</div>
+        <div class="label-input-error" id="labelInputError"></div>
 
         <div class="label-search">
           <input type="text" id="labelSearchInput" placeholder="Filter labels…"/>
@@ -946,7 +961,10 @@
     <div class="edit-overlay" id="editOverlay">
       <div class="edit-dialog">
         <h3>Edit Label</h3>
-        <input type="text" id="editLabelInput"/>
+        <input type="text" id="editLabelInput"
+               title="Format: Category/SubCategory/Name — use letters, numbers, and hyphens separated by /"/>
+        <div class="label-format-hint" style="margin-bottom:10px">Format: <code>Category/Sub/Name</code> — letters, numbers &amp; hyphens, at least 2 segments</div>
+        <div class="label-input-error" id="editLabelError"></div>
         <div class="edit-dialog-actions">
           <button class="edit-cancel" id="editCancelBtn">Cancel</button>
           <button class="edit-save" id="editSaveBtn">Save</button>
@@ -1521,7 +1539,11 @@ labelSearchInput.addEventListener('input', renderLabelList);
 
 addLabelBtn.addEventListener('click', async () => {
   const label = newLabelInput.value.trim();
+  const inputErr = document.getElementById('labelInputError');
+  inputErr.textContent = '';
   if (!label) return;
+  const vErr = validateLabel(label);
+  if (vErr) { inputErr.textContent = vErr; return; }
   addLabelBtn.disabled = true;
   setLabelStatus('', 'Adding label…');
   try {
@@ -1590,8 +1612,12 @@ editOverlay.addEventListener('click', e => {
 
 editSaveBtn.addEventListener('click', async () => {
   const newLabel = editLabelInput.value.trim();
+  const editErr = document.getElementById('editLabelError');
+  editErr.textContent = '';
   if (!newLabel || !editingLabel) return;
   if (newLabel === editingLabel) { editOverlay.classList.remove('visible'); return; }
+  const vErr = validateLabel(newLabel);
+  if (vErr) { editErr.textContent = vErr; return; }
   setLabelStatus('', 'Saving…');
   try {
     const res = await fetch('/labels', {
@@ -1681,6 +1707,14 @@ regenBtn.addEventListener('click', () => {
 function setLabelStatus(type, msg) {
   labelStatusEl.className = 'label-status' + (type ? ' ' + type : '');
   labelStatusEl.textContent = msg;
+}
+
+const _LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9-]*(\/[A-Za-z0-9][A-Za-z0-9-]*)+$/;
+function validateLabel(label) {
+  if (!label) return 'Label is required.';
+  if (!_LABEL_RE.test(label))
+    return 'Invalid format. Use Category/Sub/Name with letters, numbers & hyphens (e.g. Fruit/Apple/Fuji).';
+  return null;
 }
 
 // ════════════════════════════════════════════
