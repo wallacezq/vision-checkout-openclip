@@ -24,6 +24,63 @@ from optimum.intel.openvino import (
     OVWeightQuantizationConfig,
 )
 
+# ---------------------------------------------------------------------------
+# Monkey-patch: fix "multiple values for argument 'allow_new'" on Python 3.14+
+# Python 3.14's functools.partial (vectorcall) validates keyword arguments at
+# the C level before dispatching to __init__, so patching __init__ alone does
+# not help. Instead, replace every functools.partial-based NORMALIZED_CONFIG_CLASS
+# with a plain callable, and patch with_args to stop creating partials.
+#
+# NOTE: The replacement must NOT be a plain function/lambda, because Python
+# functions are descriptors — when stored as a class attribute and accessed
+# via an instance (self.NORMALIZED_CONFIG_CLASS), they would be bound as a
+# method, injecting `self` as an extra first argument.  functools.partial
+# objects are *not* descriptors, so the originals never had that problem.
+# We therefore use a simple callable class (_ConfigFactory) which also is
+# not a descriptor.
+# ---------------------------------------------------------------------------
+import functools as _functools
+from optimum.utils.normalized_config import NormalizedConfig as _NormalizedConfig
+
+
+class _ConfigFactory:
+    """Non-descriptor callable that replaces functools.partial for NormalizedConfig."""
+    __slots__ = ("_func", "_kw")
+
+    def __init__(self, func, **kw):
+        self._func = func
+        self._kw = kw
+
+    def __call__(self, config):
+        return self._func(config, **self._kw)
+
+
+# 1) Patch with_args so future calls produce _ConfigFactory instead of partial.
+@classmethod
+def _safe_with_args(cls, allow_new=False, **kwargs):
+    return _ConfigFactory(cls, allow_new=allow_new, **kwargs)
+
+_NormalizedConfig.with_args = _safe_with_args
+
+# 2) Replace already-created functools.partial NORMALIZED_CONFIG_CLASS attrs.
+for _mod_path in (
+    "optimum.exporters.onnx.model_configs",
+    "optimum.exporters.openvino.model_configs",
+):
+    try:
+        import importlib
+        _mod = importlib.import_module(_mod_path)
+    except ImportError:
+        continue
+    for _name in dir(_mod):
+        _obj = getattr(_mod, _name, None)
+        if isinstance(_obj, type):
+            _ncc = _obj.__dict__.get("NORMALIZED_CONFIG_CLASS")
+            if isinstance(_ncc, _functools.partial):
+                setattr(_obj, "NORMALIZED_CONFIG_CLASS",
+                        _ConfigFactory(_ncc.func, **_ncc.keywords))
+# ---------------------------------------------------------------------------
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -86,8 +143,8 @@ def load_model_config() -> str:
             key = data.get("model")
             if key in MODEL_REGISTRY:
                 return key
-    return "metaclip2-vit-bigG-14"  # default
-
+    #return "metaclip2-vit-bigG-14"  # default
+    return "dfn5b-vit-H-14"
 
 def save_model_config(model_key: str) -> None:
     """Persist the selected model key."""
