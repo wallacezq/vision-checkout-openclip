@@ -663,6 +663,45 @@
     }
     .label-status.error { color: var(--red); }
     .label-status.success { color: var(--green); }
+    .label-row-price {
+      font-size: 0.72rem; font-weight: 800; color: var(--green);
+      font-family: var(--font-body); flex-shrink: 0; cursor: pointer;
+      padding: 2px 6px; border-radius: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .label-row-price:hover { background: rgba(62,207,142,0.12); }
+    .label-row-price.no-price {
+      color: var(--muted); font-weight: 600; font-style: italic;
+    }
+    /* edit price modal */
+    .edit-price-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      z-index: 101; align-items: center; justify-content: center;
+    }
+    .edit-price-overlay.visible { display: flex; }
+    .edit-price-dialog {
+      background: var(--panel); border: 1.5px solid var(--border);
+      border-radius: var(--radius); padding: 24px; width: 380px; max-width: 90vw;
+    }
+    .edit-price-dialog h3 { font-size: 1rem; font-weight: 800; margin-bottom: 6px; }
+    .edit-price-dialog .ep-product { font-size: 0.85rem; color: var(--muted); margin-bottom: 14px; }
+    .edit-price-dialog input {
+      width: 100%; background: var(--card); border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm); padding: 10px 14px;
+      font-family: var(--font-body); font-size: 0.9rem; color: var(--text); outline: none;
+      margin-bottom: 14px;
+    }
+    .edit-price-dialog input:focus { border-color: var(--accent); }
+    .edit-price-dialog .ep-error {
+      font-size: 0.7rem; color: var(--red); font-family: var(--font-body);
+      min-height: 16px; margin-bottom: 8px;
+    }
+    .edit-price-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .edit-price-dialog-actions button {
+      padding: 8px 18px; border-radius: var(--radius-sm);
+      font-family: var(--font); font-size: 0.85rem; font-weight: 700; cursor: pointer;
+    }
+
     /* edit modal overlay */
     .edit-overlay {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -924,6 +963,20 @@
             <div class="regen-progress-fill" id="regenProgressFill"></div>
           </div>
           <div class="regen-progress-sub" id="regenProgressSub">0 / 0 labels encoded</div>
+        </div>
+      </div>
+
+      <!-- Edit price modal -->
+      <div class="edit-price-overlay" id="editPriceOverlay">
+        <div class="edit-price-dialog">
+          <h3>Edit Price</h3>
+          <div class="ep-product" id="editPriceProduct"></div>
+          <input type="number" id="editPriceInput" step="0.01" min="0" placeholder="New price (RM)"/>
+          <div class="ep-error" id="editPriceError"></div>
+          <div class="edit-price-dialog-actions">
+            <button class="edit-cancel" id="editPriceCancelBtn">Cancel</button>
+            <button class="edit-save" id="editPriceSaveBtn">Save</button>
+          </div>
         </div>
       </div>
 
@@ -1477,6 +1530,7 @@ settingsBtn.addEventListener('click', () => {
   settingsPanel.classList.add('visible');
   fetchLabels();
   fetchModels();
+  fetchPrices();
 });
 
 backFromSettings.addEventListener('click', () => {
@@ -1504,13 +1558,19 @@ function renderLabelList() {
 
   labelListContainer.innerHTML = filtered.map(label => {
     const parts = label.split('/');
-    const name = parts[parts.length - 1].replace(/-/g, ' ');
+    const shortName = parts[parts.length - 1];
+    const name = shortName.replace(/-/g, ' ');
     const cat = parts.slice(0, -1).join(' › ');
+    const priceEntry = allProducts.find(p => p.product === shortName);
+    const priceHtml = priceEntry
+      ? `<span class="label-row-price" data-short="${shortName}" title="Click to edit price">RM ${priceEntry.price.toFixed(2)}</span>`
+      : `<span class="label-row-price no-price" data-short="${shortName}" title="Click to set price">no price</span>`;
     return `<div class="label-row" data-label="${label.replace(/"/g, '&quot;')}">
       <div style="flex:1;min-width:0">
         <div class="label-row-text">${name}</div>
         <div class="label-row-cat">${cat}</div>
       </div>
+      ${priceHtml}
       <div class="label-row-actions">
         <button class="label-btn-edit" data-action="edit">✎</button>
         <button class="label-btn-del" data-action="delete">✕</button>
@@ -1531,6 +1591,15 @@ function renderLabelList() {
       e.stopPropagation();
       const label = btn.closest('.label-row').dataset.label;
       await deleteLabel(label);
+    });
+  });
+
+  labelListContainer.querySelectorAll('.label-row-price').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      const shortName = el.dataset.short;
+      const priceEntry = allProducts.find(p => p.product === shortName);
+      openEditPriceDialog(shortName, priceEntry ? priceEntry.price : 0);
     });
   });
 }
@@ -1716,6 +1785,91 @@ function validateLabel(label) {
     return 'Invalid format. Use Category/Sub/Name with letters, numbers & hyphens (e.g. Fruit/Apple/Fuji).';
   return null;
 }
+
+// ════════════════════════════════════════════
+// Price Management (inline in label rows)
+// ════════════════════════════════════════════
+const editPriceOverlay    = document.getElementById('editPriceOverlay');
+const editPriceInput      = document.getElementById('editPriceInput');
+const editPriceProduct    = document.getElementById('editPriceProduct');
+const editPriceError      = document.getElementById('editPriceError');
+const editPriceCancelBtn  = document.getElementById('editPriceCancelBtn');
+const editPriceSaveBtn    = document.getElementById('editPriceSaveBtn');
+
+let allProducts = [];
+let editingProduct = null;
+
+async function fetchPrices() {
+  try {
+    const res = await fetch('/prices');
+    const data = await res.json();
+    allProducts = data.products || [];
+    renderLabelList();
+  } catch (err) {
+    setLabelStatus('error', 'Failed to load prices: ' + err.message);
+  }
+}
+
+function openEditPriceDialog(product, currentPrice) {
+  editingProduct = product;
+  editPriceProduct.textContent = product.replace(/_/g, ' ').replace(/-/g, ' ');
+  editPriceInput.value = currentPrice;
+  editPriceError.textContent = '';
+  editPriceOverlay.classList.add('visible');
+  editPriceInput.focus();
+  editPriceInput.select();
+}
+
+editPriceCancelBtn.addEventListener('click', () => {
+  editPriceOverlay.classList.remove('visible');
+  editingProduct = null;
+});
+
+editPriceOverlay.addEventListener('click', e => {
+  if (e.target === editPriceOverlay) {
+    editPriceOverlay.classList.remove('visible');
+    editingProduct = null;
+  }
+});
+
+editPriceSaveBtn.addEventListener('click', async () => {
+  if (!editingProduct) return;
+  editPriceError.textContent = '';
+  const val = parseFloat(editPriceInput.value);
+  if (isNaN(val) || val < 0) {
+    editPriceError.textContent = 'Please enter a valid non-negative price.';
+    return;
+  }
+  try {
+    const existing = allProducts.some(p => p.product === editingProduct);
+    const method = existing ? 'PUT' : 'POST';
+    const res = await fetch('/prices', {
+      method,
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ product: editingProduct, price: val })
+    });
+    const data = await res.json();
+    if (data.error) {
+      editPriceError.textContent = data.error;
+      return;
+    }
+    // Update local cache
+    const idx = allProducts.findIndex(p => p.product === editingProduct);
+    if (idx !== -1) allProducts[idx].price = data.price;
+    else allProducts.push({ product: data.product, price: data.price });
+    renderLabelList();
+    editPriceOverlay.classList.remove('visible');
+    editingProduct = null;
+    const verb = existing ? 'updated' : 'added';
+    setLabelStatus('success', `Price ${verb}: ${data.product} → RM ${data.price.toFixed(2)}`);
+  } catch (err) {
+    editPriceError.textContent = err.message;
+  }
+});
+
+editPriceInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') editPriceSaveBtn.click();
+});
 
 // ════════════════════════════════════════════
 // Model Selection

@@ -402,6 +402,70 @@ def switch_model_stream():
 
 
 # ---------------------------------------------------------------------------
+# Price management routes
+# ---------------------------------------------------------------------------
+
+@app.route("/prices", methods=["GET"])
+def get_prices():
+    """Return all products and their prices."""
+    return jsonify({"products": product_db.list_products()})
+
+
+@app.route("/prices", methods=["POST"])
+def add_price():
+    """
+    Add a new product price.
+    Request JSON: { "product": "Granny-Smith", "price": 3.50 }
+    """
+    data = request.get_json(force=True) or {}
+    product = (data.get("product") or "").strip()
+    price = data.get("price")
+
+    if not product:
+        return jsonify({"error": "product is required"}), 400
+    if price is None:
+        return jsonify({"error": "price is required"}), 400
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return jsonify({"error": "price must be a number"}), 400
+    if price < 0:
+        return jsonify({"error": "price must not be negative"}), 400
+
+    if not product_db.add_product(product, price):
+        return jsonify({"error": f"Product '{product}' already exists"}), 409
+
+    return jsonify({"product": product, "price": round(price, 2)}), 201
+
+
+@app.route("/prices", methods=["PUT"])
+def update_price():
+    """
+    Update a product's price.
+    Request JSON: { "product": "Milk", "price": 2.50 }
+    """
+    data = request.get_json(force=True) or {}
+    product = (data.get("product") or "").strip()
+    price = data.get("price")
+
+    if not product:
+        return jsonify({"error": "product is required"}), 400
+    if price is None:
+        return jsonify({"error": "price is required"}), 400
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return jsonify({"error": "price must be a number"}), 400
+    if price < 0:
+        return jsonify({"error": "price must not be negative"}), 400
+
+    if not product_db.update_price(product, price):
+        return jsonify({"error": f"Product '{product}' not found in database"}), 404
+
+    return jsonify({"product": product, "price": round(price, 2)})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

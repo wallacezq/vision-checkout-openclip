@@ -143,8 +143,13 @@ def load_model_config() -> str:
             key = data.get("model")
             if key in MODEL_REGISTRY:
                 return key
+<<<<<<< HEAD
     #return "metaclip2-vit-bigG-14"  # default
     return "dfn5b-vit-H-14"
+=======
+    return "dfn5b-vit-H-14"  # default
+
+>>>>>>> 079f742 (feat: add SKU price management)
 
 def save_model_config(model_key: str) -> None:
     """Persist the selected model key."""
