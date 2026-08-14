@@ -547,6 +547,18 @@
     }
     .model-select:focus { border-color: var(--accent); }
     .model-select option { background: var(--panel); color: var(--text); }
+    .precision-toggle {
+      display: inline-flex; gap: 4px; margin-left: 6px;
+    }
+    .precision-btn {
+      padding: 2px 11px; border: 1.5px solid var(--border);
+      border-radius: 4px; background: transparent; color: var(--muted);
+      cursor: pointer; font-size: 0.78rem; font-weight: 700;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .precision-btn:hover:not(.active):not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .precision-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .precision-btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .label-toolbar { display: flex; gap: 8px; }
     .label-toolbar input {
       flex: 1; background: var(--card); border: 1.5px solid var(--border);
@@ -927,6 +939,7 @@
       <div class="status-bar">
         <div class="status-dot" id="statusDot"></div>
         <span id="statusText">Ready to scan</span>
+        <span style="margin-left:auto;font-size:0.75rem;color:var(--text-muted)">Device: <span id="scanDeviceBadge" style="font-weight:600;color:var(--accent)">—</span></span>
       </div>
 
     </div><!-- /scanner-area -->
@@ -946,6 +959,14 @@
         <div class="model-select-wrap">
           <label for="modelSelect">CLIP Model</label>
           <select class="model-select" id="modelSelect"></select>
+        </div>
+        <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Inference device: <span id="ovDeviceBadge" style="font-weight:600;color:var(--accent)">—</span></div>
+        <div style="margin-top:4px;font-size:0.78rem;color:var(--text-muted)">
+          Precision:
+          <span class="precision-toggle">
+            <button class="precision-btn" id="precisionFP16Btn" data-precision="FP16">FP16</button>
+            <button class="precision-btn" id="precisionINT8Btn" data-precision="INT8">INT8</button>
+          </span>
         </div>
         <div class="regen-card">
           <div class="regen-card-info">
@@ -1140,6 +1161,11 @@ function openScanner() {
   document.querySelector('.search-wrap').style.display = 'none';
   scannerArea.classList.add('visible');
   setStatus('', 'Ready to scan');
+  fetchModels();
+  // If already in camera mode but the stream was killed (e.g. after visiting Settings), restart it
+  if (inputMode === 'camera' && !cameraStream) {
+    startCamera();
+  }
 }
 
 backToGrid.addEventListener('click', () => {
@@ -1888,6 +1914,15 @@ async function fetchModels() {
       if (m.active) { opt.selected = true; currentModelKey = m.key; }
       modelSelect.appendChild(opt);
     });
+    const badge = document.getElementById('ovDeviceBadge');
+    if (badge && data.ov_device) badge.textContent = data.ov_device;
+    const scanBadge = document.getElementById('scanDeviceBadge');
+    if (scanBadge && data.ov_device) scanBadge.textContent = data.ov_device;
+    // Sync precision toggle
+    if (data.precision) {
+      document.getElementById('precisionFP16Btn').classList.toggle('active', data.precision === 'FP16');
+      document.getElementById('precisionINT8Btn').classList.toggle('active', data.precision === 'INT8');
+    }
   } catch (err) {
     setLabelStatus('error', 'Failed to load models: ' + err.message);
   }
@@ -1961,6 +1996,67 @@ modelSelect.addEventListener('change', () => {
     regenBtn.disabled = false;
     setLabelStatus('error', 'Connection lost during model switch');
   };
+});
+
+// ════════════════════════════════════════════
+// Precision Toggle (FP16 / INT8)
+// ════════════════════════════════════════════
+function setPrecisionBtnsDisabled(disabled) {
+  document.getElementById('precisionFP16Btn').disabled = disabled;
+  document.getElementById('precisionINT8Btn').disabled = disabled;
+}
+
+[document.getElementById('precisionFP16Btn'), document.getElementById('precisionINT8Btn')].forEach(btn => {
+  btn.addEventListener('click', () => {
+    const precision = btn.dataset.precision;
+    if (btn.classList.contains('active')) return; // already active
+
+    const progressEl    = document.getElementById('regenProgress');
+    const progressLabel = document.getElementById('regenProgressLabel');
+    const progressPct   = document.getElementById('regenProgressPct');
+    const progressFill  = document.getElementById('regenProgressFill');
+    const progressSub   = document.getElementById('regenProgressSub');
+
+    setPrecisionBtnsDisabled(true);
+    modelSelect.disabled = true;
+    regenBtn.disabled = true;
+    progressEl.classList.add('visible');
+    progressLabel.textContent = `Switching to ${precision}…`;
+    progressPct.textContent = '';
+    progressFill.style.width = '0%';
+    progressSub.textContent = precision === 'INT8'
+      ? 'Exporting INT8 model (first time may take a few minutes)…'
+      : 'Loading FP16 model…';
+    setLabelStatus('', '');
+
+    const evtSource = new EventSource('/model/precision_stream?precision=' + encodeURIComponent(precision));
+
+    evtSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      evtSource.close();
+      setPrecisionBtnsDisabled(false);
+      modelSelect.disabled = false;
+      regenBtn.disabled = false;
+      progressEl.classList.remove('visible');
+
+      if (data.error) {
+        setLabelStatus('error', data.error);
+        return;
+      }
+      document.getElementById('precisionFP16Btn').classList.toggle('active', data.precision === 'FP16');
+      document.getElementById('precisionINT8Btn').classList.toggle('active', data.precision === 'INT8');
+      setLabelStatus('success', `Switched to ${data.precision} precision.`);
+    };
+
+    evtSource.onerror = () => {
+      evtSource.close();
+      setPrecisionBtnsDisabled(false);
+      modelSelect.disabled = false;
+      regenBtn.disabled = false;
+      progressEl.classList.remove('visible');
+      setLabelStatus('error', 'Connection lost during precision switch');
+    };
+  });
 });
 </script>
 </body>
