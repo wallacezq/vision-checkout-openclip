@@ -143,13 +143,7 @@ def load_model_config() -> str:
             key = data.get("model")
             if key in MODEL_REGISTRY:
                 return key
-<<<<<<< HEAD
-    #return "metaclip2-vit-bigG-14"  # default
-    return "dfn5b-vit-H-14"
-=======
     return "dfn5b-vit-H-14"  # default
-
->>>>>>> 079f742 (feat: add SKU price management)
 
 def save_model_config(model_key: str) -> None:
     """Persist the selected model key."""
@@ -166,7 +160,26 @@ MODEL_ID = _active_model["model_id"]
 PRETRAINED = _active_model["pretrained"]
 
 ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.pth")
+ZEROSHOT_LABELS_PATH  = Path("clip_zeroshot_cls_labels.json")
 OV_DEVICE = "GPU"
+
+
+def _resolve_ov_device(requested: str) -> str:
+    """Return *requested* if available, otherwise fall back to CPU."""
+    if requested.upper() == "CPU":
+        return "CPU"
+    try:
+        import openvino as ov
+        available = ov.Core().available_devices
+        if requested.upper() in [d.upper() for d in available]:
+            return requested.upper()
+        logger.warning(
+            "OpenVINO device '%s' not available (available: %s). Falling back to CPU.",
+            requested, available,
+        )
+    except Exception as exc:
+        logger.warning("Could not query OpenVINO devices (%s). Falling back to CPU.", exc)
+    return "CPU"
 TOP_K = 5
 
 # If the top-1 softmax probability (0-100) is below this value the result is
@@ -185,10 +198,12 @@ class ZeroShotClassifier:
     """Wraps OpenVINO-accelerated CLIP for zero-shot product classification."""
 
     def __init__(self, quantize: bool = False, ov_device: str = OV_DEVICE) -> None:
-        self.ov_device = ov_device
+        self.ov_device = _resolve_ov_device(ov_device)
+        self.quantize = quantize
         
         clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
         tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
+        self._clip_model = clip_model
         self.tokenizer = tokenizer
         #self.processor = preprocess
         #self.processor = CLIPProcessor.from_pretrained(MODEL_ID)
@@ -213,6 +228,7 @@ class ZeroShotClassifier:
                 ).save_pretrained(self.model_dir)
 
         self.zeroshot_weights = self._load_or_build_weights()
+        self._ov_vision = self._load_ov_vision()
 
     # ------------------------------------------------------------------
     # Model switching
@@ -239,6 +255,7 @@ class ZeroShotClassifier:
         clip_model, _, preprocess = open_clip.create_model_and_transforms(
             OPENCLIP_MODEL_ID, pretrained=PRETRAINED
         )
+        self._clip_model = clip_model
         self.tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
         self.processor = AutoImageProcessor.from_pretrained(MODEL_ID)
 
@@ -251,32 +268,124 @@ class ZeroShotClassifier:
                 MODEL_ID
             ).save_pretrained(self.model_dir)
 
+        # Reload cached visual model for new model/device
+        self._ov_vision = self._load_ov_vision()
+
         # Regenerate label embeddings
         self.rebuild_weights(progress_cb=progress_cb)
+
+    def switch_precision(self, quantize: bool) -> None:
+        """Switch between FP16 (quantize=False) and INT8 (quantize=True).
+
+        Exports the OV model for the target precision if it does not already
+        exist, then hot-swaps the compiled visual model.  Label embeddings are
+        not affected and do not need to be regenerated.
+        """
+        if self.quantize == quantize:
+            logger.info("Already using %s — nothing to do.", "INT8" if quantize else "FP16")
+            return
+
+        base = Path(f"{MODEL_ID.split('/')[-1]}-openclip")
+        if quantize:
+            target_dir = base / "INT8"
+            if not target_dir.exists():
+                logger.info("Exporting INT8 quantised OV model …")
+                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
+                    MODEL_ID,
+                    quantization_config=OVWeightQuantizationConfig(bits=8),
+                ).save_pretrained(target_dir)
+        else:
+            target_dir = base / "FP16"
+            if not target_dir.exists():
+                logger.info("Exporting FP16 OV model …")
+                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
+                    MODEL_ID
+                ).save_pretrained(target_dir)
+
+        self.model_dir = target_dir
+        self.quantize = quantize
+        self._ov_vision = self._load_ov_vision()
+        logger.info("Switched OV precision to %s.", "INT8" if quantize else "FP16")
 
     # ------------------------------------------------------------------
     # Weight helpers
     # ------------------------------------------------------------------
 
     def rebuild_weights(self, progress_cb=None) -> None:
-        """Reload labels from disk and regenerate zero-shot classifier weights.
+        """Reload labels from disk and regenerate only missing embeddings.
 
-        *progress_cb*, if provided, is called as ``progress_cb(current, total, label)``
-        after each label is encoded.
+        Labels that already have a cached embedding are reused as-is.
+        Only new labels (not present in the saved manifest) are encoded.
+        Pass *progress_cb(current, total, label)* to stream progress.
         """
         global LABELS
         LABELS = load_labels()
-        if ZEROSHOT_WEIGHTS_PATH.exists():
-            ZEROSHOT_WEIGHTS_PATH.unlink()
+
+        # Load existing weights + manifest if both are present
+        if ZEROSHOT_WEIGHTS_PATH.exists() and ZEROSHOT_LABELS_PATH.exists():
+            try:
+                with open(ZEROSHOT_LABELS_PATH) as f:
+                    saved_labels = json.load(f)
+                existing = torch.load(ZEROSHOT_WEIGHTS_PATH, map_location="cpu")
+                saved_idx = {lbl: i for i, lbl in enumerate(saved_labels)}
+
+                new_labels = [lbl for lbl in LABELS if lbl not in saved_idx]
+                if not new_labels and [lbl for lbl in saved_labels if lbl not in set(LABELS)] == []:
+                    # Every current label already has an embedding — just reorder if needed
+                    if LABELS == saved_labels:
+                        logger.info("All %d embeddings are up to date — nothing to regenerate.", len(LABELS))
+                        if progress_cb:
+                            for i, lbl in enumerate(LABELS):
+                                progress_cb(i + 1, len(LABELS), lbl)
+                        return
+
+                logger.info("%d new label(s) to encode, %d reused from cache.",
+                            len(new_labels), len(LABELS) - len(new_labels))
+                total = len(LABELS)
+                cols = []
+                for i, label in enumerate(LABELS):
+                    if label in saved_idx:
+                        cols.append(existing[:, saved_idx[label]])
+                    else:
+                        cols.append(self._encode_label(label))
+                    if progress_cb:
+                        progress_cb(i + 1, total, label)
+
+                self.zeroshot_weights = torch.stack(cols, dim=1)
+                torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+                with open(ZEROSHOT_LABELS_PATH, "w") as f:
+                    json.dump(LABELS, f, indent=2)
+                logger.info("Saved updated zero-shot weights to %s", ZEROSHOT_WEIGHTS_PATH)
+                return
+            except Exception as exc:
+                logger.warning("Could not load cached weights (%s) — doing full rebuild.", exc)
+
+        # No usable cache — full rebuild
         self.zeroshot_weights = self._build_weights(progress_cb=progress_cb)
+
+    def _load_ov_vision(self):
+        """Load and compile OVModelOpenCLIPVisual once; fall back to CPU on failure."""
+        logger.info("Loading OV visual model on %s …", self.ov_device)
+        try:
+            return OVModelOpenCLIPVisual.from_pretrained(
+                self.model_dir, device=self.ov_device
+            )
+        except RuntimeError as exc:
+            if self.ov_device != "CPU":
+                logger.warning(
+                    "Failed to load OV model on %s (%s). Falling back to CPU.",
+                    self.ov_device, exc,
+                )
+                self.ov_device = "CPU"
+                return OVModelOpenCLIPVisual.from_pretrained(
+                    self.model_dir, device="CPU"
+                )
+            raise
 
     def _build_weights(self, progress_cb=None) -> torch.Tensor:
         """Build zero-shot classifier weight matrix from text prompts."""
         logger.info("Building zero-shot weights (one-time, may take a few minutes) …")
-        #clip_model = CLIPModel.from_pretrained(MODEL_ID)
-        #clip_model = AutoModel.from_pretrained(MODEL_ID)
-        clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
-        #tokenizer = open_clip.get_tokenizer("ViT-bigG-14-worldwide")
+        clip_model = self._clip_model
         
         total = len(LABELS)
         weights = []
@@ -293,6 +402,8 @@ class ZeroShotClassifier:
                 progress_cb(i + 1, total, label)
         weight_matrix = torch.stack(weights, dim=1)
         torch.save(weight_matrix, ZEROSHOT_WEIGHTS_PATH)
+        with open(ZEROSHOT_LABELS_PATH, "w") as f:
+            json.dump(LABELS, f, indent=2)
         logger.info("Saved zero-shot weights to %s", ZEROSHOT_WEIGHTS_PATH)
         return weight_matrix
 
@@ -303,6 +414,82 @@ class ZeroShotClassifier:
             logger.info("Weights shape: %s", weights.shape)
             return weights
         return self._build_weights()
+
+    def _encode_label(self, label: str) -> torch.Tensor:
+        """Compute a normalised embedding vector for a single label."""
+        texts = [t.format(label=label) for t in CLASS_TEMPLATES]
+        with torch.no_grad():
+            embeddings = self._clip_model.encode_text(self.tokenizer(texts))
+        embedding = F.normalize(embeddings, dim=-1).mean(dim=0)
+        embedding /= embedding.norm()
+        return embedding
+
+    def add_label_weight(self, label: str) -> None:
+        """Append an embedding for *label* without recomputing existing labels."""
+        global LABELS
+        old_len = len(LABELS)
+        if self.zeroshot_weights.shape[1] != old_len:
+            logger.warning("Weight matrix out of sync — falling back to full rebuild.")
+            LABELS = load_labels()
+            self.zeroshot_weights = self._build_weights()
+            return
+        new_vec = self._encode_label(label)
+        self.zeroshot_weights = torch.cat(
+            [self.zeroshot_weights, new_vec.unsqueeze(1)], dim=1
+        )
+        LABELS = load_labels()
+        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        with open(ZEROSHOT_LABELS_PATH, "w") as f:
+            json.dump(LABELS, f, indent=2)
+        logger.info("Incrementally added embedding for '%s'", label)
+
+    def remove_label_weight(self, label: str) -> None:
+        """Remove the embedding column for *label* without recomputing others."""
+        global LABELS
+        old_labels = list(LABELS)
+        if self.zeroshot_weights.shape[1] != len(old_labels):
+            logger.warning("Weight matrix out of sync — falling back to full rebuild.")
+            LABELS = load_labels()
+            self.zeroshot_weights = self._build_weights()
+            return
+        try:
+            idx = old_labels.index(label)
+        except ValueError:
+            logger.warning("Label '%s' not in cached list — falling back to full rebuild.", label)
+            LABELS = load_labels()
+            self.zeroshot_weights = self._build_weights()
+            return
+        cols = [i for i in range(self.zeroshot_weights.shape[1]) if i != idx]
+        self.zeroshot_weights = self.zeroshot_weights[:, cols]
+        LABELS = load_labels()
+        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        with open(ZEROSHOT_LABELS_PATH, "w") as f:
+            json.dump(LABELS, f, indent=2)
+        logger.info("Incrementally removed embedding for '%s'", label)
+
+    def update_label_weight(self, old_label: str, new_label: str) -> None:
+        """Replace the embedding for *old_label* with one for *new_label*."""
+        global LABELS
+        old_labels = list(LABELS)
+        if self.zeroshot_weights.shape[1] != len(old_labels):
+            logger.warning("Weight matrix out of sync — falling back to full rebuild.")
+            LABELS = load_labels()
+            self.zeroshot_weights = self._build_weights()
+            return
+        try:
+            idx = old_labels.index(old_label)
+        except ValueError:
+            logger.warning("Label '%s' not in cached list — falling back to full rebuild.", old_label)
+            LABELS = load_labels()
+            self.zeroshot_weights = self._build_weights()
+            return
+        new_vec = self._encode_label(new_label)
+        self.zeroshot_weights[:, idx] = new_vec
+        LABELS = load_labels()
+        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        with open(ZEROSHOT_LABELS_PATH, "w") as f:
+            json.dump(LABELS, f, indent=2)
+        logger.info("Incrementally updated embedding '%s' -> '%s'", old_label, new_label)
 
     # ------------------------------------------------------------------
     # Inference
@@ -327,10 +514,7 @@ class ZeroShotClassifier:
             images=[img_array], return_tensors="pt" #, padding=True
         )
         
-        ov_vision = OVModelOpenCLIPVisual.from_pretrained(
-            self.model_dir, device=self.ov_device
-        )
-        visual_out = ov_vision(**img_inputs)
+        visual_out = self._ov_vision(**img_inputs)
         image_features = visual_out["image_features"]  # (1, D)
 
         logits = 100.0 * image_features @ self.zeroshot_weights  # (1, N)

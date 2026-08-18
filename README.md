@@ -1,5 +1,12 @@
 # Vision Checkout (OpenCLIP + OpenVINO)
 
+## Changelog
+
+| Version | Changes |
+|---|---|
+| **0.0** | Baseline — Flask app with zero-shot CLIP classification, OpenVINO export, label management UI, cart & PDF receipt |
+| **0.1** | Cached OV visual model + CLIP text model (no per-call reloads); smart label rebuild (only encodes new/changed labels); GPU auto-detection with CPU fallback; FP16 / INT8 precision toggle in UI; incremental add/remove/update label weights without full rebuild; bug fixes (merge conflict, camera not restarting after Settings) |
+
 Automatic vision-based retail checkout demo: upload a product image, run **zero-shot** classification (CLIP/OpenCLIP accelerated with **OpenVINO**), show the top predictions, and generate a **PDF receipt**.
 
 ## What's in this repo

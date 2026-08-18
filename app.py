@@ -233,7 +233,7 @@ def add_label():
     save_labels(labels)
 
     if data.get("regenerate"):
-        classifier.rebuild_weights()
+        classifier.add_label_weight(label)
 
     return jsonify({"labels": labels, "added": label})
 
@@ -265,7 +265,7 @@ def modify_label():
     save_labels(labels)
 
     if data.get("regenerate"):
-        classifier.rebuild_weights()
+        classifier.update_label_weight(old_label, new_label)
 
     return jsonify({"labels": labels, "modified": {"old": old_label, "new": new_label}})
 
@@ -289,7 +289,7 @@ def delete_label():
     save_labels(labels)
 
     if data.get("regenerate"):
-        classifier.rebuild_weights()
+        classifier.remove_label_weight(label)
 
     return jsonify({"labels": labels, "deleted": label})
 
@@ -354,7 +354,34 @@ def get_model():
         {"key": k, "display_name": v["display_name"], "active": k == active}
         for k, v in MODEL_REGISTRY.items()
     ]
-    return jsonify({"models": models, "active": active})
+    return jsonify({
+        "models": models,
+        "active": active,
+        "ov_device": classifier.ov_device,
+        "precision": "INT8" if classifier.quantize else "FP16",
+    })
+
+
+@app.route("/model/precision_stream")
+def switch_precision_stream():
+    """SSE endpoint: switch OV inference precision between FP16 and INT8."""
+    precision = request.args.get("precision", "").strip().upper()
+    if precision not in ("FP16", "INT8"):
+        return jsonify({"error": "precision must be FP16 or INT8"}), 400
+    quantize = precision == "INT8"
+    if quantize == classifier.quantize:
+        return jsonify({"error": f"Already using {precision}"}), 409
+
+    def generate():
+        try:
+            classifier.switch_precision(quantize)
+            yield f"data: {json.dumps({'done': True, 'precision': precision})}\n\n"
+        except Exception as exc:
+            logger.exception("Error switching precision")
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/model/switch_stream")
