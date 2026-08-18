@@ -6,6 +6,7 @@
 |---|---|
 | **0.0** | Baseline — Flask app with zero-shot CLIP classification, OpenVINO export, label management UI, cart & PDF receipt |
 | **0.1** | Cached OV visual model + CLIP text model (no per-call reloads); smart label rebuild (only encodes new/changed labels); GPU auto-detection with CPU fallback; FP16 / INT8 precision toggle in UI; incremental add/remove/update label weights without full rebuild; bug fixes (merge conflict, camera not restarting after Settings) |
+| **0.2** | Backend selector in the UI; selectable OpenVINO backends (GPU default, plus CPU and NPU); NPU static-shape export path for FP16 / INT8 inference |
 
 Automatic vision-based retail checkout demo: upload a product image, run **zero-shot** classification (CLIP/OpenCLIP accelerated with **OpenVINO**), show the top predictions, and generate a **PDF receipt**.
 
@@ -56,6 +57,7 @@ A single Flask web app with three main parts:
 
 Accessible via the gear icon in the top bar. Contains:
 
+- **OpenVINO backend** -- Select GPU, CPU, or NPU. GPU remains the default on startup.
 - **Model selection** -- Switch between available CLIP models:
   - MetaCLIP2 ViT-bigG-14 Worldwide (default)
   - Apple DFN5B CLIP ViT-H-14-378
@@ -123,7 +125,7 @@ Then open http://localhost:5000
 | Variable | Default | Meaning |
 |---|---:|---|
 | `PORT` | `5000` | Flask port |
-| `OV_DEVICE` | `GPU` | OpenVINO device string (e.g. `CPU`, `GPU`) |
+| `OV_DEVICE` | `GPU` | OpenVINO backend string (e.g. `GPU`, `CPU`, `NPU`) |
 | `UNKNOWN_THRESHOLD` | `40.0` | If top-1 confidence (%) is below this, treat as Unknown |
 | `QUANTIZE` | `false` | If `true`, export/use an INT8 OpenVINO model (otherwise FP16) |
 
@@ -135,10 +137,13 @@ export UNKNOWN_THRESHOLD=50
 python app.py
 ```
 
+If you want to use NPU in INT8 mode, install `nncf` as well so the static-shape export can compress the exported OpenVINO graphs.
+
 ## Notes / troubleshooting
 
 - **First run can be slow**: the app may export an OpenVINO model and/or build zero-shot weights (cached to `clip_zeroshot_cls.pth`).
 - If you see errors about OpenVINO GPU, try `OV_DEVICE=CPU`.
+- If NPU INT8 export fails, install `nncf` or switch to FP16.
 - If `product_prices.csv` is missing or a predicted `short_name` doesn't exist in the CSV, `/upload` may return `bill_item: null` (or `/confirm_product` can return a 404).
 - **Model switching** exports a new OV model directory if it doesn't already exist, which can also take time on first use.
 

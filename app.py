@@ -358,8 +358,31 @@ def get_model():
         "models": models,
         "active": active,
         "ov_device": classifier.ov_device,
+        "backend": classifier.ov_device,
+        "backends": ["GPU", "CPU", "NPU"],
         "precision": "INT8" if classifier.quantize else "FP16",
     })
+
+
+@app.route("/model/backend_stream")
+def switch_backend_stream():
+    """SSE endpoint: switch the OpenVINO backend between GPU, CPU, and NPU."""
+    backend = request.args.get("backend", "").strip().upper()
+    if backend not in ("GPU", "CPU", "NPU"):
+        return jsonify({"error": "backend must be GPU, CPU, or NPU"}), 400
+    if backend == classifier.ov_device:
+        return jsonify({"error": f"Already using {backend}"}), 409
+
+    def generate():
+        try:
+            classifier.switch_backend(backend)
+            yield f"data: {json.dumps({'done': True, 'backend': classifier.ov_device})}\n\n"
+        except Exception as exc:
+            logger.exception("Error switching backend")
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/model/precision_stream")

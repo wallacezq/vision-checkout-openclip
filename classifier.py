@@ -162,17 +162,31 @@ PRETRAINED = _active_model["pretrained"]
 ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.pth")
 ZEROSHOT_LABELS_PATH  = Path("clip_zeroshot_cls_labels.json")
 OV_DEVICE = "GPU"
+SUPPORTED_OV_DEVICES = ("GPU", "CPU", "NPU")
+NPU_IMAGE_SIZE = 378
+NPU_CONTEXT_LENGTH = 77
+
+
+def _ov_runtime_config(device: str) -> dict[str, str]:
+    """Return a conservative OpenVINO runtime config for the target device."""
+    config: dict[str, str] = {"PERFORMANCE_HINT": "LATENCY"}
+    if device.upper() == "GPU":
+        cache_dir = Path(__file__).parent / ".openvino_cache" / "GPU"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        config.update({"NUM_STREAMS": "1", "CACHE_DIR": str(cache_dir.resolve())})
+    return config
 
 
 def _resolve_ov_device(requested: str) -> str:
     """Return *requested* if available, otherwise fall back to CPU."""
-    if requested.upper() == "CPU":
+    normalized = requested.upper()
+    if normalized == "CPU":
         return "CPU"
     try:
         import openvino as ov
         available = ov.Core().available_devices
-        if requested.upper() in [d.upper() for d in available]:
-            return requested.upper()
+        if normalized in [d.upper() for d in available]:
+            return normalized
         logger.warning(
             "OpenVINO device '%s' not available (available: %s). Falling back to CPU.",
             requested, available,
@@ -199,6 +213,7 @@ class ZeroShotClassifier:
 
     def __init__(self, quantize: bool = False, ov_device: str = OV_DEVICE) -> None:
         self.ov_device = _resolve_ov_device(ov_device)
+        self.backend = self.ov_device
         self.quantize = quantize
         
         clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
@@ -209,23 +224,8 @@ class ZeroShotClassifier:
         #self.processor = CLIPProcessor.from_pretrained(MODEL_ID)
         self.processor = AutoImageProcessor.from_pretrained(MODEL_ID)
 
-        # Resolve / build OV model directory
-        base = Path(f"{MODEL_ID.split('/')[-1]}-openclip")
-        if quantize:
-            self.model_dir = base / "INT8"
-            if not self.model_dir.exists():
-                logger.info("Exporting INT8 quantised OV model …")
-                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
-                    MODEL_ID,
-                    quantization_config=OVWeightQuantizationConfig(bits=8),
-                ).save_pretrained(self.model_dir)
-        else:
-            self.model_dir = base / "FP16"
-            if not self.model_dir.exists():
-                logger.info("Exporting FP16 OV model …")
-                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
-                    MODEL_ID
-                ).save_pretrained(self.model_dir)
+        self.model_dir = self._resolve_model_dir()
+        self._ensure_model_artifacts()
 
         self.zeroshot_weights = self._load_or_build_weights()
         self._ov_vision = self._load_ov_vision()
@@ -237,6 +237,124 @@ class ZeroShotClassifier:
     @property
     def active_model_key(self) -> str:
         return load_model_config()
+
+    def _base_model_dir(self) -> Path:
+        return Path(f"{MODEL_ID.split('/')[-1]}-openclip")
+
+    def _npu_static_model_dir(self) -> Path:
+        return Path(f"{MODEL_ID.split('/')[-1]}-openclip-npu-static")
+
+    def _resolve_model_dir(self) -> Path:
+        if self.ov_device == "NPU":
+            return self._npu_static_model_dir() / ("INT8" if self.quantize else "FP16")
+        return self._base_model_dir() / ("INT8" if self.quantize else "FP16")
+
+    def _ensure_standard_model_artifacts(self) -> None:
+        if self.quantize:
+            if not self.model_dir.exists():
+                logger.info("Exporting INT8 quantised OV model …")
+                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
+                    MODEL_ID,
+                    quantization_config=OVWeightQuantizationConfig(bits=8),
+                ).save_pretrained(self.model_dir)
+        else:
+            if not self.model_dir.exists():
+                logger.info("Exporting FP16 OV model …")
+                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
+                    MODEL_ID
+                ).save_pretrained(self.model_dir)
+
+    def _ensure_npu_static_artifacts(self) -> None:
+        import openvino as ov
+
+        try:
+            import nncf
+        except Exception:
+            nncf = None
+
+        image_xml = self.model_dir / "image_encoder.xml"
+        text_xml = self.model_dir / "text_encoder.xml"
+        if image_xml.exists() and text_xml.exists():
+            return
+
+        self.model_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Exporting NPU static OV models to %s …", self.model_dir)
+
+        class ImageEncoder(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.visual = model.visual
+
+            def forward(self, pixel_values):
+                return self.visual(pixel_values)
+
+        class TextEncoder(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
+
+            def forward(self, input_ids):
+                return self.model.encode_text(input_ids)
+
+        clip_model = self._clip_model
+        clip_model.eval()
+
+        image_encoder = ImageEncoder(clip_model).eval()
+        text_encoder = TextEncoder(clip_model).eval()
+
+        dummy_image = torch.randn(1, 3, NPU_IMAGE_SIZE, NPU_IMAGE_SIZE, dtype=torch.float32)
+        dummy_text = torch.zeros(1, NPU_CONTEXT_LENGTH, dtype=torch.long)
+
+        with torch.no_grad():
+            ov_image_model = ov.convert_model(
+                image_encoder,
+                example_input=dummy_image,
+                input=[ov.PartialShape([1, 3, NPU_IMAGE_SIZE, NPU_IMAGE_SIZE])],
+            )
+            ov_text_model = ov.convert_model(
+                text_encoder,
+                example_input=dummy_text,
+                input=[ov.PartialShape([1, NPU_CONTEXT_LENGTH])],
+            )
+
+        ov_image_model.inputs[0].get_tensor().set_names({"pixel_values"})
+        ov_image_model.outputs[0].get_tensor().set_names({"image_features"})
+        ov_image_model.reshape({"pixel_values": [1, 3, NPU_IMAGE_SIZE, NPU_IMAGE_SIZE]})
+        ov_image_model.validate_nodes_and_infer_types()
+
+        ov_text_model.inputs[0].get_tensor().set_names({"input_ids"})
+        ov_text_model.outputs[0].get_tensor().set_names({"text_features"})
+        ov_text_model.reshape({"input_ids": [1, NPU_CONTEXT_LENGTH]})
+        ov_text_model.validate_nodes_and_infer_types()
+
+        if self.quantize:
+            if nncf is None:
+                raise RuntimeError(
+                    "INT8 NPU export requires nncf. Install it and retry, or select FP16."
+                )
+            ov_image_model = nncf.compress_weights(
+                ov_image_model, mode=nncf.CompressWeightsMode.INT8_SYM
+            )
+            ov_text_model = nncf.compress_weights(
+                ov_text_model, mode=nncf.CompressWeightsMode.INT8_SYM
+            )
+            ov.save_model(ov_image_model, str(image_xml), compress_to_fp16=False)
+            ov.save_model(ov_text_model, str(text_xml), compress_to_fp16=False)
+        else:
+            ov.save_model(ov_image_model, str(image_xml), compress_to_fp16=True)
+            ov.save_model(ov_text_model, str(text_xml), compress_to_fp16=True)
+
+    def _ensure_model_artifacts(self) -> None:
+        self.model_dir = self._resolve_model_dir()
+        if self.ov_device == "NPU":
+            self._ensure_npu_static_artifacts()
+        else:
+            self._ensure_standard_model_artifacts()
+
+    def _reload_runtime_model(self) -> None:
+        self.model_dir = self._resolve_model_dir()
+        self._ensure_model_artifacts()
+        self._ov_vision = self._load_ov_vision()
 
     def switch_model(self, model_key: str, progress_cb=None) -> None:
         """Switch to a different CLIP model and regenerate everything."""
@@ -259,20 +377,22 @@ class ZeroShotClassifier:
         self.tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
         self.processor = AutoImageProcessor.from_pretrained(MODEL_ID)
 
-        # Rebuild OV model directory
-        base = Path(f"{MODEL_ID.split('/')[-1]}-openclip")
-        self.model_dir = base / "FP16"
-        if not self.model_dir.exists():
-            logger.info("Exporting FP16 OV model for %s …", MODEL_ID)
-            OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
-                MODEL_ID
-            ).save_pretrained(self.model_dir)
-
-        # Reload cached visual model for new model/device
-        self._ov_vision = self._load_ov_vision()
+        self._reload_runtime_model()
 
         # Regenerate label embeddings
         self.rebuild_weights(progress_cb=progress_cb)
+
+    def switch_backend(self, backend: str) -> None:
+        """Switch between OpenVINO backends such as GPU, CPU, and NPU."""
+        resolved = _resolve_ov_device(backend)
+        if self.ov_device == resolved:
+            logger.info("Already using %s — nothing to do.", resolved)
+            return
+
+        self.ov_device = resolved
+        self.backend = resolved
+        self._reload_runtime_model()
+        logger.info("Switched OpenVINO backend to %s.", self.ov_device)
 
     def switch_precision(self, quantize: bool) -> None:
         """Switch between FP16 (quantize=False) and INT8 (quantize=True).
@@ -285,26 +405,8 @@ class ZeroShotClassifier:
             logger.info("Already using %s — nothing to do.", "INT8" if quantize else "FP16")
             return
 
-        base = Path(f"{MODEL_ID.split('/')[-1]}-openclip")
-        if quantize:
-            target_dir = base / "INT8"
-            if not target_dir.exists():
-                logger.info("Exporting INT8 quantised OV model …")
-                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
-                    MODEL_ID,
-                    quantization_config=OVWeightQuantizationConfig(bits=8),
-                ).save_pretrained(target_dir)
-        else:
-            target_dir = base / "FP16"
-            if not target_dir.exists():
-                logger.info("Exporting FP16 OV model …")
-                OVModelOpenCLIPForZeroShotImageClassification.from_pretrained(
-                    MODEL_ID
-                ).save_pretrained(target_dir)
-
-        self.model_dir = target_dir
         self.quantize = quantize
-        self._ov_vision = self._load_ov_vision()
+        self._reload_runtime_model()
         logger.info("Switched OV precision to %s.", "INT8" if quantize else "FP16")
 
     # ------------------------------------------------------------------
@@ -364,11 +466,38 @@ class ZeroShotClassifier:
         self.zeroshot_weights = self._build_weights(progress_cb=progress_cb)
 
     def _load_ov_vision(self):
-        """Load and compile OVModelOpenCLIPVisual once; fall back to CPU on failure."""
+        """Load and compile the visual encoder for the current backend."""
         logger.info("Loading OV visual model on %s …", self.ov_device)
+
+        if self.ov_device == "NPU":
+            import openvino as ov
+
+            image_xml = self.model_dir / "image_encoder.xml"
+            if not image_xml.exists():
+                raise FileNotFoundError(
+                    f"NPU static model not found at {image_xml}. Re-run with NPU selected."
+                )
+
+            core = ov.Core()
+            ov_config = _ov_runtime_config(self.ov_device)
+            try:
+                image_model = core.read_model(str(image_xml))
+                return core.compile_model(image_model, self.ov_device, ov_config)
+            except RuntimeError as exc:
+                if self.ov_device == "CPU":
+                    raise
+                logger.warning(
+                    "Failed to compile NPU model on %s (%s). Falling back to CPU.",
+                    self.ov_device, exc,
+                )
+                image_model = core.read_model(str(image_xml))
+                return core.compile_model(image_model, "CPU", _ov_runtime_config("CPU"))
+
         try:
             return OVModelOpenCLIPVisual.from_pretrained(
-                self.model_dir, device=self.ov_device
+                self.model_dir,
+                device=self.ov_device,
+                ov_config=_ov_runtime_config(self.ov_device),
             )
         except RuntimeError as exc:
             if self.ov_device != "CPU":
@@ -377,8 +506,11 @@ class ZeroShotClassifier:
                     self.ov_device, exc,
                 )
                 self.ov_device = "CPU"
+                self.backend = "CPU"
                 return OVModelOpenCLIPVisual.from_pretrained(
-                    self.model_dir, device="CPU"
+                    self.model_dir,
+                    device="CPU",
+                    ov_config=_ov_runtime_config("CPU"),
                 )
             raise
 
@@ -510,12 +642,15 @@ class ZeroShotClassifier:
         """
         t0 = time.perf_counter()
 
-        img_inputs = self.processor(
-            images=[img_array], return_tensors="pt" #, padding=True
-        )
-        
-        visual_out = self._ov_vision(**img_inputs)
-        image_features = visual_out["image_features"]  # (1, D)
+        img_inputs = self.processor(images=[img_array], return_tensors="pt")
+
+        if self.ov_device == "NPU":
+            img_np = img_inputs["pixel_values"].numpy().astype("float32")
+            visual_out = self._ov_vision({"pixel_values": img_np})
+            image_features = torch.from_numpy(visual_out[self._ov_vision.outputs[0]])
+        else:
+            visual_out = self._ov_vision(**img_inputs)
+            image_features = visual_out["image_features"]  # (1, D)
 
         logits = 100.0 * image_features @ self.zeroshot_weights  # (1, N)
         probs = torch.softmax(logits, dim=-1).squeeze()           # (N,)

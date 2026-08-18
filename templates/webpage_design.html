@@ -957,10 +957,14 @@
       <div class="settings-section">
         <div class="settings-section-header">Model</div>
         <div class="model-select-wrap">
+          <label for="backendSelect">OpenVINO Backend</label>
+          <select class="model-select" id="backendSelect"></select>
+        </div>
+        <div class="model-select-wrap">
           <label for="modelSelect">CLIP Model</label>
           <select class="model-select" id="modelSelect"></select>
         </div>
-        <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Inference device: <span id="ovDeviceBadge" style="font-weight:600;color:var(--accent)">—</span></div>
+        <div style="margin-top:6px;font-size:0.78rem;color:var(--text-muted)">Inference backend: <span id="ovDeviceBadge" style="font-weight:600;color:var(--accent)">—</span></div>
         <div style="margin-top:4px;font-size:0.78rem;color:var(--text-muted)">
           Precision:
           <span class="precision-toggle">
@@ -1536,6 +1540,7 @@ const labelListContainer = document.getElementById('labelListContainer');
 const labelCount         = document.getElementById('labelCount');
 const labelChangedBanner = document.getElementById('labelChangedBanner');
 const regenBtn           = document.getElementById('regenBtn');
+const backendSelect      = document.getElementById('backendSelect');
 const modelSelect        = document.getElementById('modelSelect');
 const labelStatusEl      = document.getElementById('labelStatus');
 const editOverlay        = document.getElementById('editOverlay');
@@ -1546,6 +1551,13 @@ const editSaveBtn        = document.getElementById('editSaveBtn');
 let allLabels = [];
 let labelsChanged = false;
 let editingLabel = null;
+let currentBackend = '';
+
+function setBackendControlsDisabled(disabled) {
+  backendSelect.disabled = disabled;
+  modelSelect.disabled = disabled;
+  regenBtn.disabled = disabled;
+}
 
 settingsBtn.addEventListener('click', () => {
   // Hide other panels
@@ -1906,7 +1918,18 @@ async function fetchModels() {
   try {
     const res = await fetch('/model');
     const data = await res.json();
+    backendSelect.innerHTML = '';
     modelSelect.innerHTML = '';
+    (data.backends || ['GPU', 'CPU', 'NPU']).forEach(backend => {
+      const opt = document.createElement('option');
+      opt.value = backend;
+      opt.textContent = backend;
+      if (backend === (data.backend || data.ov_device)) {
+        opt.selected = true;
+        currentBackend = backend;
+      }
+      backendSelect.appendChild(opt);
+    });
     (data.models || []).forEach(m => {
       const opt = document.createElement('option');
       opt.value = m.key;
@@ -1915,9 +1938,9 @@ async function fetchModels() {
       modelSelect.appendChild(opt);
     });
     const badge = document.getElementById('ovDeviceBadge');
-    if (badge && data.ov_device) badge.textContent = data.ov_device;
+    if (badge && (data.backend || data.ov_device)) badge.textContent = data.backend || data.ov_device;
     const scanBadge = document.getElementById('scanDeviceBadge');
-    if (scanBadge && data.ov_device) scanBadge.textContent = data.ov_device;
+    if (scanBadge && (data.backend || data.ov_device)) scanBadge.textContent = data.backend || data.ov_device;
     // Sync precision toggle
     if (data.precision) {
       document.getElementById('precisionFP16Btn').classList.toggle('active', data.precision === 'FP16');
@@ -1932,8 +1955,8 @@ modelSelect.addEventListener('change', () => {
   const newKey = modelSelect.value;
   if (newKey === currentModelKey) return;
 
-  modelSelect.disabled = true;
-  regenBtn.disabled = true;
+  setBackendControlsDisabled(true);
+  setPrecisionBtnsDisabled(true);
 
   const progressEl    = document.getElementById('regenProgress');
   const progressLabel = document.getElementById('regenProgressLabel');
@@ -1957,8 +1980,8 @@ modelSelect.addEventListener('change', () => {
       evtSource.close();
       progressEl.classList.remove('visible');
       modelSelect.value = currentModelKey;
-      modelSelect.disabled = false;
-      regenBtn.disabled = false;
+      setBackendControlsDisabled(false);
+      setPrecisionBtnsDisabled(false);
       setLabelStatus('error', data.error);
       return;
     }
@@ -1973,8 +1996,8 @@ modelSelect.addEventListener('change', () => {
       labelChangedBanner.classList.remove('visible');
       setTimeout(() => {
         progressEl.classList.remove('visible');
-        modelSelect.disabled = false;
-        regenBtn.disabled = false;
+        setBackendControlsDisabled(false);
+        setPrecisionBtnsDisabled(false);
         setLabelStatus('success', 'Model switched & weights regenerated!');
       }, 600);
       return;
@@ -1992,9 +2015,74 @@ modelSelect.addEventListener('change', () => {
     evtSource.close();
     progressEl.classList.remove('visible');
     modelSelect.value = currentModelKey;
-    modelSelect.disabled = false;
-    regenBtn.disabled = false;
+    setBackendControlsDisabled(false);
+    setPrecisionBtnsDisabled(false);
     setLabelStatus('error', 'Connection lost during model switch');
+  };
+});
+
+backendSelect.addEventListener('change', () => {
+  const newBackend = backendSelect.value;
+  if (newBackend === currentBackend) return;
+
+  setBackendControlsDisabled(true);
+  setPrecisionBtnsDisabled(true);
+
+  const progressEl    = document.getElementById('regenProgress');
+  const progressLabel = document.getElementById('regenProgressLabel');
+  const progressPct   = document.getElementById('regenProgressPct');
+  const progressFill  = document.getElementById('regenProgressFill');
+  const progressSub   = document.getElementById('regenProgressSub');
+
+  progressEl.classList.add('visible');
+  progressLabel.textContent = 'Switching backend…';
+  progressPct.textContent = '0%';
+  progressFill.style.width = '0%';
+  progressSub.textContent = 'Reloading inference backend…';
+  setLabelStatus('', '');
+
+  const evtSource = new EventSource('/model/backend_stream?backend=' + encodeURIComponent(newBackend));
+
+  evtSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.error) {
+      evtSource.close();
+      progressEl.classList.remove('visible');
+      backendSelect.value = currentBackend;
+      setBackendControlsDisabled(false);
+      setPrecisionBtnsDisabled(false);
+      setLabelStatus('error', data.error);
+      return;
+    }
+
+    if (data.done) {
+      evtSource.close();
+      progressFill.style.width = '100%';
+      progressPct.textContent = '100%';
+      progressLabel.textContent = 'Complete!';
+      currentBackend = data.backend;
+      const badge = document.getElementById('ovDeviceBadge');
+      if (badge) badge.textContent = data.backend;
+      const scanBadge = document.getElementById('scanDeviceBadge');
+      if (scanBadge) scanBadge.textContent = data.backend;
+      setTimeout(() => {
+        progressEl.classList.remove('visible');
+        setBackendControlsDisabled(false);
+        setPrecisionBtnsDisabled(false);
+        setLabelStatus('success', `Switched backend to ${data.backend}.`);
+      }, 600);
+      return;
+    }
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    progressEl.classList.remove('visible');
+    backendSelect.value = currentBackend;
+    setBackendControlsDisabled(false);
+    setPrecisionBtnsDisabled(false);
+    setLabelStatus('error', 'Connection lost during backend switch');
   };
 });
 
@@ -2004,6 +2092,7 @@ modelSelect.addEventListener('change', () => {
 function setPrecisionBtnsDisabled(disabled) {
   document.getElementById('precisionFP16Btn').disabled = disabled;
   document.getElementById('precisionINT8Btn').disabled = disabled;
+  backendSelect.disabled = disabled;
 }
 
 [document.getElementById('precisionFP16Btn'), document.getElementById('precisionINT8Btn')].forEach(btn => {
@@ -2018,8 +2107,7 @@ function setPrecisionBtnsDisabled(disabled) {
     const progressSub   = document.getElementById('regenProgressSub');
 
     setPrecisionBtnsDisabled(true);
-    modelSelect.disabled = true;
-    regenBtn.disabled = true;
+    setBackendControlsDisabled(true);
     progressEl.classList.add('visible');
     progressLabel.textContent = `Switching to ${precision}…`;
     progressPct.textContent = '';
@@ -2035,8 +2123,7 @@ function setPrecisionBtnsDisabled(disabled) {
       const data = JSON.parse(event.data);
       evtSource.close();
       setPrecisionBtnsDisabled(false);
-      modelSelect.disabled = false;
-      regenBtn.disabled = false;
+      setBackendControlsDisabled(false);
       progressEl.classList.remove('visible');
 
       if (data.error) {
@@ -2051,8 +2138,7 @@ function setPrecisionBtnsDisabled(disabled) {
     evtSource.onerror = () => {
       evtSource.close();
       setPrecisionBtnsDisabled(false);
-      modelSelect.disabled = false;
-      regenBtn.disabled = false;
+      setBackendControlsDisabled(false);
       progressEl.classList.remove('visible');
       setLabelStatus('error', 'Connection lost during precision switch');
     };
