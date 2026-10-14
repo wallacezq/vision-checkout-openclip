@@ -528,6 +528,29 @@ def model_export_stream():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/threshold", methods=["GET"])
+def get_threshold():
+    """Return the current Unknown-detection confidence threshold (0-100)."""
+    return jsonify({"threshold": UNKNOWN_THRESHOLD})
+
+
+@app.route("/threshold", methods=["POST"])
+def set_threshold():
+    """Update the Unknown-detection confidence threshold (0-100)."""
+    global UNKNOWN_THRESHOLD
+    data = request.get_json(silent=True) or {}
+    try:
+        value = float(data.get("threshold"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "threshold must be a number between 0 and 100"}), 400
+    if not (0.0 <= value <= 100.0):
+        return jsonify({"error": "threshold must be between 0 and 100"}), 400
+
+    UNKNOWN_THRESHOLD = value
+    logger.info("Unknown threshold set to %.1f%%", UNKNOWN_THRESHOLD)
+    return jsonify({"threshold": UNKNOWN_THRESHOLD})
+
+
 # ---------------------------------------------------------------------------
 # Price management routes
 # ---------------------------------------------------------------------------
