@@ -1,0 +1,23 @@
+{
+    "json_schema_version": "2.2.0",
+    "description": "CLIP / OpenCLIP visual encoder preprocessing for DL Streamer gvaclassify. Normalizes pixels with the standard CLIP mean/std and copies the raw image_features embedding through as a tensor.",
+    "input_preproc": [
+        {
+            "layer_name": "pixel_values",
+            "format": "image",
+            "params": {
+                "resize": "no-aspect-ratio",
+                "color_space": "RGB",
+                "range": [0.0, 1.0],
+                "mean": [0.48145466, 0.4578275, 0.40821073],
+                "std": [0.26862954, 0.26130258, 0.27577711]
+            }
+        }
+    ],
+    "output_postproc": [
+        {
+            "layer_name": "image_features",
+            "converter": "raw_data_copy"
+        }
+    ]
+}

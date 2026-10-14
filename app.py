@@ -361,6 +361,8 @@ def get_model():
         "backend": classifier.ov_device,
         "backends": ["GPU", "CPU", "NPU"],
         "precision": "INT8" if classifier.quantize else "FP16",
+        "vision_backend": classifier.vision_backend,
+        "vision_backends": ["openvino", "dlstreamer"],
     })
 
 
@@ -379,6 +381,27 @@ def switch_backend_stream():
             yield f"data: {json.dumps({'done': True, 'backend': classifier.ov_device})}\n\n"
         except Exception as exc:
             logger.exception("Error switching backend")
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/model/vision_backend_stream")
+def switch_vision_backend_stream():
+    """SSE endpoint: switch the vision encoder between OpenVINO and DL Streamer."""
+    vision_backend = request.args.get("vision_backend", "").strip().lower()
+    if vision_backend not in ("openvino", "dlstreamer"):
+        return jsonify({"error": "vision_backend must be 'openvino' or 'dlstreamer'"}), 400
+    if vision_backend == classifier.vision_backend:
+        return jsonify({"error": f"Already using {vision_backend}"}), 409
+
+    def generate():
+        try:
+            classifier.switch_vision_backend(vision_backend)
+            yield f"data: {json.dumps({'done': True, 'vision_backend': classifier.vision_backend})}\n\n"
+        except Exception as exc:
+            logger.exception("Error switching vision backend")
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
     return Response(generate(), mimetype="text/event-stream",
@@ -444,6 +467,60 @@ def switch_model_stream():
                     yield f"data: {json.dumps({'error': error_holder[0]})}\n\n"
                 else:
                     yield f"data: {json.dumps({'done': True, 'model': model_key})}\n\n"
+                break
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/model/export_status", methods=["GET"])
+def model_export_status():
+    """Report whether the exported model artifacts for the current config exist."""
+    try:
+        return jsonify(classifier.export_status())
+    except Exception as exc:
+        logger.exception("Error getting export status")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/model/export_stream")
+def model_export_stream():
+    """SSE endpoint: export (or re-export) the OpenCLIP model for the current config."""
+    force = request.args.get("force", "false").strip().lower() in ("1", "true", "yes")
+
+    msg_queue: queue.Queue = queue.Queue()
+
+    def progress_cb(msg: str) -> None:
+        msg_queue.put({"message": msg})
+
+    def generate():
+        import threading
+        error_holder: list = []
+        result_holder: list = []
+
+        def do_export():
+            try:
+                result_holder.append(
+                    classifier.export_models(force=force, progress_cb=progress_cb)
+                )
+            except Exception as exc:
+                logger.exception("Error exporting model")
+                error_holder.append(str(exc))
+            finally:
+                msg_queue.put(None)
+
+        t = threading.Thread(target=do_export, daemon=True)
+        t.start()
+
+        while True:
+            item = msg_queue.get()
+            if item is None:
+                if error_holder:
+                    yield f"data: {json.dumps({'error': error_holder[0]})}\n\n"
+                else:
+                    payload = {"done": True}
+                    if result_holder:
+                        payload["status"] = result_holder[0]
+                    yield f"data: {json.dumps(payload)}\n\n"
                 break
             yield f"data: {json.dumps(item)}\n\n"
 

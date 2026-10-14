@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 import logging
 from pathlib import Path
 from typing import NamedTuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from safetensors.torch import load_file as _safetensors_load, save_file as _safetensors_save
 from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor, AutoProcessor, AutoModel, AutoImageProcessor
 import open_clip
@@ -159,12 +162,52 @@ OPENCLIP_MODEL_ID = _active_model["openclip_model_id"]
 MODEL_ID = _active_model["model_id"]
 PRETRAINED = _active_model["pretrained"]
 
-ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.pth")
+ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.safetensors")
+LEGACY_ZEROSHOT_WEIGHTS_PATH = Path("clip_zeroshot_cls.pth")
 ZEROSHOT_LABELS_PATH  = Path("clip_zeroshot_cls_labels.json")
+_ZEROSHOT_TENSOR_KEY = "zeroshot_weights"
 OV_DEVICE = "GPU"
 SUPPORTED_OV_DEVICES = ("GPU", "CPU", "NPU")
 NPU_IMAGE_SIZE = 378
 NPU_CONTEXT_LENGTH = 77
+
+# ---------------------------------------------------------------------------
+# Vision-encoder backend selection
+#   "openvino"   → run the CLIP visual encoder via the optimum-intel OV wrapper
+#   "dlstreamer" → run the CLIP visual encoder through Intel DL Streamer's
+#                  gvaclassify GStreamer element
+# ---------------------------------------------------------------------------
+VISION_BACKEND = os.environ.get("VISION_BACKEND", "openvino").strip().lower()
+DLSTREAMER_DEVICE = os.environ.get("DLSTREAMER_DEVICE", "GPU").strip().upper()
+MODEL_PROC_PATH = Path(__file__).parent / "model_proc" / "clip_image_encoder.json"
+
+
+def _save_weights(weights: torch.Tensor) -> None:
+    """Persist the zero-shot weight matrix in safetensors format."""
+    _safetensors_save(
+        {_ZEROSHOT_TENSOR_KEY: weights.detach().cpu().contiguous()},
+        str(ZEROSHOT_WEIGHTS_PATH),
+    )
+
+
+def _load_weights() -> torch.Tensor:
+    """Load the zero-shot weight matrix from the safetensors file."""
+    return _safetensors_load(str(ZEROSHOT_WEIGHTS_PATH))[_ZEROSHOT_TENSOR_KEY]
+
+
+def _maybe_migrate_legacy_weights() -> None:
+    """One-time migration of a legacy .pth weight cache to safetensors."""
+    if ZEROSHOT_WEIGHTS_PATH.exists() or not LEGACY_ZEROSHOT_WEIGHTS_PATH.exists():
+        return
+    try:
+        legacy = torch.load(LEGACY_ZEROSHOT_WEIGHTS_PATH, map_location="cpu")
+        _save_weights(legacy)
+        logger.info(
+            "Migrated legacy weights %s -> %s",
+            LEGACY_ZEROSHOT_WEIGHTS_PATH, ZEROSHOT_WEIGHTS_PATH,
+        )
+    except Exception as exc:
+        logger.warning("Could not migrate legacy weights (%s).", exc)
 
 
 def _ov_runtime_config(device: str) -> dict[str, str]:
@@ -211,10 +254,12 @@ class Prediction(NamedTuple):
 class ZeroShotClassifier:
     """Wraps OpenVINO-accelerated CLIP for zero-shot product classification."""
 
-    def __init__(self, quantize: bool = False, ov_device: str = OV_DEVICE) -> None:
+    def __init__(self, quantize: bool = False, ov_device: str = OV_DEVICE,
+                 vision_backend: str = VISION_BACKEND) -> None:
         self.ov_device = _resolve_ov_device(ov_device)
         self.backend = self.ov_device
         self.quantize = quantize
+        self.vision_backend = vision_backend.strip().lower()
         
         clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
         tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
@@ -356,6 +401,73 @@ class ZeroShotClassifier:
         self._ensure_model_artifacts()
         self._ov_vision = self._load_ov_vision()
 
+    # ------------------------------------------------------------------
+    # Model export management
+    # ------------------------------------------------------------------
+
+    def _current_export_dir(self) -> Path:
+        """Directory holding the exported artifacts for the current config."""
+        precision = "INT8" if self.quantize else "FP16"
+        if self.vision_backend == "dlstreamer":
+            return self._dlstreamer_model_dir()
+        if self.ov_device == "NPU":
+            return self._npu_static_model_dir() / precision
+        return self._base_model_dir() / precision
+
+    def _expected_artifacts(self) -> list[Path]:
+        """Exported model files that must exist for the current backend/precision."""
+        d = self._current_export_dir()
+        if self.vision_backend == "dlstreamer":
+            return [d / "image_encoder.xml", d / "image_encoder.bin"]
+        if self.ov_device == "NPU":
+            return [d / "image_encoder.xml", d / "text_encoder.xml"]
+        return [d / "openvino_model_vision.xml", d / "openvino_model_text.xml"]
+
+    def export_status(self) -> dict:
+        """Report whether the exported model artifacts for the current config exist."""
+        artifacts = self._expected_artifacts()
+        items = [{"path": str(p), "exists": p.exists()} for p in artifacts]
+        return {
+            "model": self.active_model_key,
+            "model_name": MODEL_REGISTRY.get(self.active_model_key, {}).get(
+                "display_name", self.active_model_key
+            ),
+            "device": self.ov_device,
+            "precision": "INT8" if self.quantize else "FP16",
+            "vision_backend": self.vision_backend,
+            "export_dir": str(self._current_export_dir()),
+            "artifacts": items,
+            "available": bool(items) and all(i["exists"] for i in items),
+        }
+
+    def export_models(self, force: bool = False, progress_cb=None) -> dict:
+        """Export (or re-export) the OpenCLIP model for the current config.
+
+        When *force* is True, any existing exported artifacts are removed first
+        so the model is regenerated from scratch.
+        """
+        def emit(msg: str) -> None:
+            if progress_cb:
+                progress_cb(msg)
+
+        if force:
+            emit("Removing existing exported artifacts \u2026")
+            target = self._current_export_dir()
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+
+        emit("Exporting model \u2014 this can take a while \u2026")
+        if self.vision_backend == "dlstreamer":
+            self._ensure_dlstreamer_image_encoder()
+        else:
+            self.model_dir = self._resolve_model_dir()
+            self._ensure_model_artifacts()
+
+        emit("Reloading inference runtime \u2026")
+        self._ov_vision = self._load_ov_vision()
+        emit("Export complete")
+        return self.export_status()
+
     def switch_model(self, model_key: str, progress_cb=None) -> None:
         """Switch to a different CLIP model and regenerate everything."""
         global OPENCLIP_MODEL_ID, MODEL_ID, PRETRAINED
@@ -394,6 +506,29 @@ class ZeroShotClassifier:
         self._reload_runtime_model()
         logger.info("Switched OpenVINO backend to %s.", self.ov_device)
 
+    def switch_vision_backend(self, vision_backend: str) -> None:
+        """Switch the vision encoder between 'openvino' and 'dlstreamer'."""
+        normalized = vision_backend.strip().lower()
+        if normalized not in ("openvino", "dlstreamer"):
+            raise ValueError("vision_backend must be 'openvino' or 'dlstreamer'")
+        if self.vision_backend == normalized:
+            logger.info("Already using %s vision backend — nothing to do.", normalized)
+            return
+
+        # Verify the runtime is installed before the (potentially slow) reload so
+        # the user gets a clear message instead of a late, cryptic failure.
+        if normalized == "dlstreamer":
+            from dlstreamer_encoder import check_dlstreamer_available
+
+            available, detail = check_dlstreamer_available()
+            logger.info("DL Streamer availability: %s (%s)", available, detail)
+            if not available:
+                raise RuntimeError(detail)
+
+        self.vision_backend = normalized
+        self._reload_runtime_model()
+        logger.info("Switched vision backend to %s.", self.vision_backend)
+
     def switch_precision(self, quantize: bool) -> None:
         """Switch between FP16 (quantize=False) and INT8 (quantize=True).
 
@@ -422,13 +557,14 @@ class ZeroShotClassifier:
         """
         global LABELS
         LABELS = load_labels()
+        _maybe_migrate_legacy_weights()
 
         # Load existing weights + manifest if both are present
         if ZEROSHOT_WEIGHTS_PATH.exists() and ZEROSHOT_LABELS_PATH.exists():
             try:
                 with open(ZEROSHOT_LABELS_PATH) as f:
                     saved_labels = json.load(f)
-                existing = torch.load(ZEROSHOT_WEIGHTS_PATH, map_location="cpu")
+                existing = _load_weights()
                 saved_idx = {lbl: i for i, lbl in enumerate(saved_labels)}
 
                 new_labels = [lbl for lbl in LABELS if lbl not in saved_idx]
@@ -454,7 +590,7 @@ class ZeroShotClassifier:
                         progress_cb(i + 1, total, label)
 
                 self.zeroshot_weights = torch.stack(cols, dim=1)
-                torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+                _save_weights(self.zeroshot_weights)
                 with open(ZEROSHOT_LABELS_PATH, "w") as f:
                     json.dump(LABELS, f, indent=2)
                 logger.info("Saved updated zero-shot weights to %s", ZEROSHOT_WEIGHTS_PATH)
@@ -465,8 +601,50 @@ class ZeroShotClassifier:
         # No usable cache — full rebuild
         self.zeroshot_weights = self._build_weights(progress_cb=progress_cb)
 
+    def _dlstreamer_model_dir(self) -> Path:
+        return Path(
+            f"{MODEL_ID.split('/')[-1]}-openclip-dlstreamer"
+        ) / ("INT8" if self.quantize else "FP16")
+
+    def _ensure_dlstreamer_image_encoder(self) -> Path:
+        """Export the CLIP visual encoder to an OpenVINO IR for gvaclassify.
+
+        Reuses the static-shape export path (named ``pixel_values`` input and
+        ``image_features`` output) so DL Streamer's gvaclassify can load it and
+        the model-proc can bind to those layer names.
+        """
+        model_dir = self._dlstreamer_model_dir()
+        image_xml = model_dir / "image_encoder.xml"
+        if not image_xml.exists():
+            saved_dir = self.model_dir
+            self.model_dir = model_dir
+            try:
+                self._ensure_npu_static_artifacts()
+            finally:
+                self.model_dir = saved_dir
+        return image_xml
+
+    def _load_dlstreamer_vision(self):
+        """Create the gvaclassify-backed visual encoder."""
+        from dlstreamer_encoder import DLStreamerVisionEncoder
+
+        image_xml = self._ensure_dlstreamer_image_encoder()
+        model_proc = MODEL_PROC_PATH if MODEL_PROC_PATH.exists() else None
+        logger.info(
+            "Loading DL Streamer gvaclassify visual encoder on %s (model=%s)",
+            DLSTREAMER_DEVICE, image_xml,
+        )
+        return DLStreamerVisionEncoder(
+            model_xml=image_xml,
+            model_proc=model_proc,
+            device=DLSTREAMER_DEVICE,
+        )
+
     def _load_ov_vision(self):
         """Load and compile the visual encoder for the current backend."""
+        if self.vision_backend == "dlstreamer":
+            return self._load_dlstreamer_vision()
+
         logger.info("Loading OV visual model on %s …", self.ov_device)
 
         if self.ov_device == "NPU":
@@ -533,16 +711,17 @@ class ZeroShotClassifier:
             if progress_cb:
                 progress_cb(i + 1, total, label)
         weight_matrix = torch.stack(weights, dim=1)
-        torch.save(weight_matrix, ZEROSHOT_WEIGHTS_PATH)
+        _save_weights(weight_matrix)
         with open(ZEROSHOT_LABELS_PATH, "w") as f:
             json.dump(LABELS, f, indent=2)
         logger.info("Saved zero-shot weights to %s", ZEROSHOT_WEIGHTS_PATH)
         return weight_matrix
 
     def _load_or_build_weights(self) -> torch.Tensor:
+        _maybe_migrate_legacy_weights()
         if ZEROSHOT_WEIGHTS_PATH.exists():
             logger.info("Loading cached zero-shot weights from %s", ZEROSHOT_WEIGHTS_PATH)
-            weights = torch.load(ZEROSHOT_WEIGHTS_PATH, map_location="cpu")
+            weights = _load_weights()
             logger.info("Weights shape: %s", weights.shape)
             return weights
         return self._build_weights()
@@ -570,7 +749,7 @@ class ZeroShotClassifier:
             [self.zeroshot_weights, new_vec.unsqueeze(1)], dim=1
         )
         LABELS = load_labels()
-        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        _save_weights(self.zeroshot_weights)
         with open(ZEROSHOT_LABELS_PATH, "w") as f:
             json.dump(LABELS, f, indent=2)
         logger.info("Incrementally added embedding for '%s'", label)
@@ -594,7 +773,7 @@ class ZeroShotClassifier:
         cols = [i for i in range(self.zeroshot_weights.shape[1]) if i != idx]
         self.zeroshot_weights = self.zeroshot_weights[:, cols]
         LABELS = load_labels()
-        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        _save_weights(self.zeroshot_weights)
         with open(ZEROSHOT_LABELS_PATH, "w") as f:
             json.dump(LABELS, f, indent=2)
         logger.info("Incrementally removed embedding for '%s'", label)
@@ -618,7 +797,7 @@ class ZeroShotClassifier:
         new_vec = self._encode_label(new_label)
         self.zeroshot_weights[:, idx] = new_vec
         LABELS = load_labels()
-        torch.save(self.zeroshot_weights, ZEROSHOT_WEIGHTS_PATH)
+        _save_weights(self.zeroshot_weights)
         with open(ZEROSHOT_LABELS_PATH, "w") as f:
             json.dump(LABELS, f, indent=2)
         logger.info("Incrementally updated embedding '%s' -> '%s'", old_label, new_label)
@@ -642,15 +821,24 @@ class ZeroShotClassifier:
         """
         t0 = time.perf_counter()
 
-        img_inputs = self.processor(images=[img_array], return_tensors="pt")
-
-        if self.ov_device == "NPU":
-            img_np = img_inputs["pixel_values"].numpy().astype("float32")
-            visual_out = self._ov_vision({"pixel_values": img_np})
-            image_features = torch.from_numpy(visual_out[self._ov_vision.outputs[0]])
+        if self.vision_backend == "dlstreamer":
+            # gvaclassify performs resize + normalization internally per the
+            # model-proc, so it receives the raw (BGR) frame directly.
+            feats = self._ov_vision.encode(img_array)
+            image_features = torch.from_numpy(
+                np.ascontiguousarray(feats)
+            ).float().reshape(1, -1)
+            image_features = F.normalize(image_features, dim=-1)
         else:
-            visual_out = self._ov_vision(**img_inputs)
-            image_features = visual_out["image_features"]  # (1, D)
+            img_inputs = self.processor(images=[img_array], return_tensors="pt")
+
+            if self.ov_device == "NPU":
+                img_np = img_inputs["pixel_values"].numpy().astype("float32")
+                visual_out = self._ov_vision({"pixel_values": img_np})
+                image_features = torch.from_numpy(visual_out[self._ov_vision.outputs[0]])
+            else:
+                visual_out = self._ov_vision(**img_inputs)
+                image_features = visual_out["image_features"]  # (1, D)
 
         logits = 100.0 * image_features @ self.zeroshot_weights  # (1, N)
         probs = torch.softmax(logits, dim=-1).squeeze()           # (N,)

@@ -957,6 +957,10 @@
       <div class="settings-section">
         <div class="settings-section-header">Model</div>
         <div class="model-select-wrap">
+          <label for="visionBackendSelect">Vision Backend</label>
+          <select class="model-select" id="visionBackendSelect"></select>
+        </div>
+        <div class="model-select-wrap">
           <label for="backendSelect">OpenVINO Backend</label>
           <select class="model-select" id="backendSelect"></select>
         </div>
@@ -988,6 +992,21 @@
             <div class="regen-progress-fill" id="regenProgressFill"></div>
           </div>
           <div class="regen-progress-sub" id="regenProgressSub">0 / 0 labels encoded</div>
+        </div>
+        <div class="regen-card" id="exportCard" style="margin-top:4px">
+          <div class="regen-card-info">
+            <div class="regen-card-title">Exported Model</div>
+            <div class="regen-card-sub" id="exportStatusSub">Checking availability…</div>
+          </div>
+          <button class="btn-regen" id="exportBtn" disabled>Export</button>
+        </div>
+        <div class="regen-progress" id="exportProgress">
+          <div class="regen-progress-header">
+            <span class="regen-progress-label" id="exportProgressLabel">Working…</span>
+          </div>
+          <div class="regen-progress-track">
+            <div class="regen-progress-fill" id="exportProgressFill"></div>
+          </div>
         </div>
       </div>
 
@@ -1541,6 +1560,7 @@ const labelCount         = document.getElementById('labelCount');
 const labelChangedBanner = document.getElementById('labelChangedBanner');
 const regenBtn           = document.getElementById('regenBtn');
 const backendSelect      = document.getElementById('backendSelect');
+const visionBackendSelect = document.getElementById('visionBackendSelect');
 const modelSelect        = document.getElementById('modelSelect');
 const labelStatusEl      = document.getElementById('labelStatus');
 const editOverlay        = document.getElementById('editOverlay');
@@ -1555,6 +1575,7 @@ let currentBackend = '';
 
 function setBackendControlsDisabled(disabled) {
   backendSelect.disabled = disabled;
+  visionBackendSelect.disabled = disabled;
   modelSelect.disabled = disabled;
   regenBtn.disabled = disabled;
 }
@@ -1913,6 +1934,9 @@ editPriceInput.addEventListener('keydown', e => {
 // Model Selection
 // ════════════════════════════════════════════
 let currentModelKey = '';
+let currentVisionBackend = '';
+
+const VISION_BACKEND_LABELS = { openvino: 'OpenVINO', dlstreamer: 'DL Streamer' };
 
 async function fetchModels() {
   try {
@@ -1920,6 +1944,17 @@ async function fetchModels() {
     const data = await res.json();
     backendSelect.innerHTML = '';
     modelSelect.innerHTML = '';
+    visionBackendSelect.innerHTML = '';
+    (data.vision_backends || ['openvino', 'dlstreamer']).forEach(vb => {
+      const opt = document.createElement('option');
+      opt.value = vb;
+      opt.textContent = VISION_BACKEND_LABELS[vb] || vb;
+      if (vb === data.vision_backend) {
+        opt.selected = true;
+        currentVisionBackend = vb;
+      }
+      visionBackendSelect.appendChild(opt);
+    });
     (data.backends || ['GPU', 'CPU', 'NPU']).forEach(backend => {
       const opt = document.createElement('option');
       opt.value = backend;
@@ -1946,10 +1981,105 @@ async function fetchModels() {
       document.getElementById('precisionFP16Btn').classList.toggle('active', data.precision === 'FP16');
       document.getElementById('precisionINT8Btn').classList.toggle('active', data.precision === 'INT8');
     }
+    refreshExportStatus();
   } catch (err) {
     setLabelStatus('error', 'Failed to load models: ' + err.message);
   }
 }
+
+// ── Exported model availability & export/re-export ──────────────
+const exportBtn        = document.getElementById('exportBtn');
+const exportStatusSub  = document.getElementById('exportStatusSub');
+
+async function refreshExportStatus() {
+  if (!exportStatusSub) return;
+  exportStatusSub.textContent = 'Checking availability…';
+  exportStatusSub.style.color = 'var(--muted)';
+  try {
+    const res = await fetch('/model/export_status');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const ctx = `${data.device} · ${data.precision}` +
+      (data.vision_backend === 'dlstreamer' ? ' · DL Streamer' : '');
+    if (data.available) {
+      exportStatusSub.textContent = `Available (${ctx})`;
+      exportStatusSub.style.color = 'var(--green)';
+      exportBtn.textContent = 'Re-export';
+    } else {
+      exportStatusSub.textContent = `Not exported yet (${ctx})`;
+      exportStatusSub.style.color = 'var(--yellow)';
+      exportBtn.textContent = 'Export';
+    }
+    exportBtn.disabled = false;
+  } catch (err) {
+    exportStatusSub.textContent = 'Status unavailable: ' + err.message;
+    exportStatusSub.style.color = 'var(--red)';
+    exportBtn.disabled = false;
+  }
+}
+
+exportBtn.addEventListener('click', () => {
+  const forced = exportBtn.textContent.trim() === 'Re-export';
+  exportBtn.disabled = true;
+  setBackendControlsDisabled(true);
+  setPrecisionBtnsDisabled(true);
+
+  const progressEl    = document.getElementById('exportProgress');
+  const progressLabel = document.getElementById('exportProgressLabel');
+  const progressFill  = document.getElementById('exportProgressFill');
+
+  progressEl.classList.add('visible');
+  progressLabel.textContent = forced ? 'Re-exporting model…' : 'Exporting model…';
+  progressFill.style.width = '15%';
+  setLabelStatus('', '');
+
+  let step = 15;
+  const evtSource = new EventSource('/model/export_stream?force=' + (forced ? 'true' : 'false'));
+
+  evtSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.error) {
+      evtSource.close();
+      progressEl.classList.remove('visible');
+      exportBtn.disabled = false;
+      setBackendControlsDisabled(false);
+      setPrecisionBtnsDisabled(false);
+      setLabelStatus('error', 'Export failed: ' + data.error);
+      return;
+    }
+
+    if (data.done) {
+      evtSource.close();
+      progressFill.style.width = '100%';
+      progressLabel.textContent = 'Complete!';
+      setTimeout(() => {
+        progressEl.classList.remove('visible');
+        exportBtn.disabled = false;
+        setBackendControlsDisabled(false);
+        setPrecisionBtnsDisabled(false);
+        setLabelStatus('success', 'Model export complete!');
+        refreshExportStatus();
+      }, 600);
+      return;
+    }
+
+    if (data.message) {
+      step = Math.min(step + 20, 90);
+      progressFill.style.width = step + '%';
+      progressLabel.textContent = data.message;
+    }
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    progressEl.classList.remove('visible');
+    exportBtn.disabled = false;
+    setBackendControlsDisabled(false);
+    setPrecisionBtnsDisabled(false);
+    setLabelStatus('error', 'Connection lost during export');
+  };
+});
 
 modelSelect.addEventListener('change', () => {
   const newKey = modelSelect.value;
@@ -1999,6 +2129,7 @@ modelSelect.addEventListener('change', () => {
         setBackendControlsDisabled(false);
         setPrecisionBtnsDisabled(false);
         setLabelStatus('success', 'Model switched & weights regenerated!');
+        refreshExportStatus();
       }, 600);
       return;
     }
@@ -2071,6 +2202,7 @@ backendSelect.addEventListener('change', () => {
         setBackendControlsDisabled(false);
         setPrecisionBtnsDisabled(false);
         setLabelStatus('success', `Switched backend to ${data.backend}.`);
+        refreshExportStatus();
       }, 600);
       return;
     }
@@ -2086,6 +2218,70 @@ backendSelect.addEventListener('change', () => {
   };
 });
 
+visionBackendSelect.addEventListener('change', () => {
+  const newVB = visionBackendSelect.value;
+  if (newVB === currentVisionBackend) return;
+
+  setBackendControlsDisabled(true);
+  setPrecisionBtnsDisabled(true);
+
+  const progressEl    = document.getElementById('regenProgress');
+  const progressLabel = document.getElementById('regenProgressLabel');
+  const progressPct   = document.getElementById('regenProgressPct');
+  const progressFill  = document.getElementById('regenProgressFill');
+  const progressSub   = document.getElementById('regenProgressSub');
+
+  progressEl.classList.add('visible');
+  progressLabel.textContent = 'Switching vision backend…';
+  progressPct.textContent = '0%';
+  progressFill.style.width = '0%';
+  progressSub.textContent = newVB === 'dlstreamer'
+    ? 'Loading DL Streamer encoder (first time exports the model)…'
+    : 'Loading OpenVINO encoder…';
+  setLabelStatus('', '');
+
+  const evtSource = new EventSource('/model/vision_backend_stream?vision_backend=' + encodeURIComponent(newVB));
+
+  evtSource.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.error) {
+      evtSource.close();
+      progressEl.classList.remove('visible');
+      visionBackendSelect.value = currentVisionBackend;
+      setBackendControlsDisabled(false);
+      setPrecisionBtnsDisabled(false);
+      setLabelStatus('error', data.error);
+      return;
+    }
+
+    if (data.done) {
+      evtSource.close();
+      progressFill.style.width = '100%';
+      progressPct.textContent = '100%';
+      progressLabel.textContent = 'Complete!';
+      currentVisionBackend = data.vision_backend;
+      setTimeout(() => {
+        progressEl.classList.remove('visible');
+        setBackendControlsDisabled(false);
+        setPrecisionBtnsDisabled(false);
+        setLabelStatus('success', `Switched vision backend to ${VISION_BACKEND_LABELS[data.vision_backend] || data.vision_backend}.`);
+        refreshExportStatus();
+      }, 600);
+      return;
+    }
+  };
+
+  evtSource.onerror = () => {
+    evtSource.close();
+    progressEl.classList.remove('visible');
+    visionBackendSelect.value = currentVisionBackend;
+    setBackendControlsDisabled(false);
+    setPrecisionBtnsDisabled(false);
+    setLabelStatus('error', 'Connection lost during vision backend switch');
+  };
+});
+
 // ════════════════════════════════════════════
 // Precision Toggle (FP16 / INT8)
 // ════════════════════════════════════════════
@@ -2093,6 +2289,7 @@ function setPrecisionBtnsDisabled(disabled) {
   document.getElementById('precisionFP16Btn').disabled = disabled;
   document.getElementById('precisionINT8Btn').disabled = disabled;
   backendSelect.disabled = disabled;
+  visionBackendSelect.disabled = disabled;
 }
 
 [document.getElementById('precisionFP16Btn'), document.getElementById('precisionINT8Btn')].forEach(btn => {
@@ -2133,6 +2330,7 @@ function setPrecisionBtnsDisabled(disabled) {
       document.getElementById('precisionFP16Btn').classList.toggle('active', data.precision === 'FP16');
       document.getElementById('precisionINT8Btn').classList.toggle('active', data.precision === 'INT8');
       setLabelStatus('success', `Switched to ${data.precision} precision.`);
+      refreshExportStatus();
     };
 
     evtSource.onerror = () => {
