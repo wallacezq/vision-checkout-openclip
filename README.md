@@ -9,6 +9,7 @@
 | **0.2** | Backend selector in the UI; selectable OpenVINO backends (GPU default, plus CPU and NPU); NPU static-shape export path for FP16 / INT8 inference |
 | **0.3** | Optional **Intel DL Streamer** vision backend — the CLIP visual encoder runs through the `gvaclassify` GStreamer element; label (product) embeddings now cached in **`.safetensors`** instead of `.pth` (legacy `.pth` auto-migrated on first load) |
 | **0.4** | DL Streamer backend rewritten to drive `gvaclassify` via the native **`gst-launch-1.0` CLI** (subprocess + JSON readback) — **no `gi`/PyGObject or `gstgva`** needed, works on any Python; **vision backend switchable in the UI** (OpenVINO ↔ DL Streamer) with an install/availability check; **exported-model availability indicator** + one-click **Export / Re-export**; **adjustable Unknown threshold** (slider + number field) in Settings |
+| **0.5** | **Unified backend-device selector** — the single **Backend Device** (GPU/CPU/NPU) setting now drives the inference device for **both** the OpenVINO and DL Streamer vision backends, so the device is settable while DL Streamer is active (previously fixed to `DLSTREAMER_DEVICE`) |
 
 Automatic vision-based retail checkout demo: upload a product image, run **zero-shot** classification (CLIP/OpenCLIP accelerated with **OpenVINO**), show the top predictions, and generate a **PDF receipt**.
 
@@ -62,7 +63,7 @@ A single Flask web app with three main parts:
 Accessible via the gear icon in the top bar. Contains:
 
 - **Vision backend** -- Switch the CLIP **visual** encoder between **OpenVINO** (optimum-intel) and **DL Streamer** (`gvaclassify`) at runtime. Switching to DL Streamer first verifies the GStreamer / DL Streamer runtime is installed and reports a clear message if it is not.
-- **OpenVINO backend** -- Select GPU, CPU, or NPU. GPU remains the default on startup.
+- **Backend device** -- Select GPU, CPU, or NPU. This single selector sets the inference device for **both** vision backends (OpenVINO and DL Streamer). GPU remains the default on startup.
 - **Precision** -- Toggle between FP16 and INT8; the matching OpenVINO model is exported on demand.
 - **Model selection** -- Switch between available CLIP models:
   - MetaCLIP2 ViT-bigG-14 Worldwide (default)
@@ -133,9 +134,9 @@ Then open http://localhost:5000
 | Variable | Default | Meaning |
 |---|---:|---|
 | `PORT` | `5000` | Flask port |
-| `OV_DEVICE` | `GPU` | OpenVINO backend string (e.g. `GPU`, `CPU`, `NPU`) |
+| `OV_DEVICE` | `GPU` | Startup default inference device (e.g. `GPU`, `CPU`, `NPU`). The in-app **Backend Device** selector overrides this at runtime for both vision backends. |
 | `VISION_BACKEND` | `openvino` | Startup default for the visual encoder: `openvino` (optimum-intel wrapper) or `dlstreamer` (`gvaclassify`). Switchable at runtime in **Settings → Vision Backend**. |
-| `DLSTREAMER_DEVICE` | `GPU` | Device string passed to `gvaclassify` when the DL Streamer backend is active |
+| `DLSTREAMER_DEVICE` | `GPU` | Startup default device when the app boots with `VISION_BACKEND=dlstreamer`. At runtime the **Backend Device** selector controls the device for both backends. |
 | `UNKNOWN_THRESHOLD` | `40.0` | Startup default for the Unknown threshold (%); adjustable at runtime in **Settings → Detection** |
 | `QUANTIZE` | `false` | If `true`, export/use an INT8 OpenVINO model (otherwise FP16) |
 
@@ -201,7 +202,7 @@ installers and augments `PATH` / `GST_PLUGIN_PATH` for the subprocess:
 | `GSTREAMER_1_0_ROOT_MSVC_X86_64` / `GSTREAMER_ROOT` | GStreamer install root (locates `gst-launch-1.0` and plugins) |
 | `DLSTREAMER_DIR` | Intel DL Streamer install root (plugins + dependencies) |
 | `GST_LAUNCH` | Explicit full path to `gst-launch-1.0` (overrides discovery) |
-| `DLSTREAMER_DEVICE` | Device passed to `gvaclassify` (`GPU` / `CPU` / `NPU`) |
+| `DLSTREAMER_DEVICE` | Startup default device for `gvaclassify` (`GPU` / `CPU` / `NPU`); overridden at runtime by the **Backend Device** selector |
 | `DLSTREAMER_TIMEOUT_S` | Per-frame subprocess timeout in seconds (default `120`) |
 
 Paths are passed to `gst-launch` using forward slashes (Windows backslashes are

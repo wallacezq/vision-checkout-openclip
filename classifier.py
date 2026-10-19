@@ -178,6 +178,9 @@ NPU_CONTEXT_LENGTH = 77
 #                  gvaclassify GStreamer element
 # ---------------------------------------------------------------------------
 VISION_BACKEND = os.environ.get("VISION_BACKEND", "openvino").strip().lower()
+# Startup default device for the DL Streamer backend. At runtime the single
+# backend selector (self.ov_device) controls the device for *both* the
+# OpenVINO and DL Streamer vision backends.
 DLSTREAMER_DEVICE = os.environ.get("DLSTREAMER_DEVICE", "GPU").strip().upper()
 MODEL_PROC_PATH = Path(__file__).parent / "model_proc" / "clip_image_encoder.json"
 
@@ -256,10 +259,15 @@ class ZeroShotClassifier:
 
     def __init__(self, quantize: bool = False, ov_device: str = OV_DEVICE,
                  vision_backend: str = VISION_BACKEND) -> None:
-        self.ov_device = _resolve_ov_device(ov_device)
+        self.vision_backend = vision_backend.strip().lower()
+        # The backend selector drives one device for both vision backends. When
+        # starting in DL Streamer mode, honor DLSTREAMER_DEVICE as the default.
+        startup_device = (
+            DLSTREAMER_DEVICE if self.vision_backend == "dlstreamer" else ov_device
+        )
+        self.ov_device = _resolve_ov_device(startup_device)
         self.backend = self.ov_device
         self.quantize = quantize
-        self.vision_backend = vision_backend.strip().lower()
         
         clip_model, _, preprocess = open_clip.create_model_and_transforms(OPENCLIP_MODEL_ID, pretrained=PRETRAINED)
         tokenizer = open_clip.get_tokenizer(OPENCLIP_MODEL_ID)
@@ -632,12 +640,12 @@ class ZeroShotClassifier:
         model_proc = MODEL_PROC_PATH if MODEL_PROC_PATH.exists() else None
         logger.info(
             "Loading DL Streamer gvaclassify visual encoder on %s (model=%s)",
-            DLSTREAMER_DEVICE, image_xml,
+            self.ov_device, image_xml,
         )
         return DLStreamerVisionEncoder(
             model_xml=image_xml,
             model_proc=model_proc,
-            device=DLSTREAMER_DEVICE,
+            device=self.ov_device,
         )
 
     def _load_ov_vision(self):
